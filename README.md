@@ -50,38 +50,64 @@ dsh web: http://127.0.0.1:3080/?token=0Ncme-2o6j0SI2MKI0MkRzxDc9qtAdK3fhIx0k7kwe
 
 ## 安装
 
-### 方式一：用 `dsh plugin`（推荐，需要 pnpm）
+需要 pnpm。若机器上没有：`npm i -g pnpm`。
+
+### 推荐：pnpm 直装
 
 ```bash
-git clone git@github.com:liyang52520/dsh-web-login.git /opt/dsh-web-login
-dsh plugin --profile web add /opt/dsh-web-login
-sudo systemctl restart dsh          # 服务名按你的实际情况改
+PROFILE="${DSH_HOME:-$HOME/.dsh}/profiles/web"
+cd "$PROFILE"
+pnpm add 'github:liyang52520/dsh-web-login'
+
+# 挂载它（只需做一次）
+cat > cordis.patch.yml <<'EOF'
+- insert:
+    - id: web-login
+      name: dsh-web-login
+EOF
+# 已有其它配置就把这一行 insert 追加进去，别覆盖
+
+systemctl restart dsh        # 服务名按你的实际情况改
 ```
 
-因为本包声明了 `dsh.bundle`，`dsh plugin add` 会把它**自动追加进 `dsh.profile.bundles` 并激活**，不需要手动编辑任何 patch 文件。装完 `$DSH_HOME/profiles/web/package.json` 里会多出依赖和 bundles 条目。
+升级就是重跑一次 `pnpm add`（或 `pnpm update dsh-web-login`）再重启。
 
-### 方式二：不用 pnpm（手动，适用于没装 pnpm 的机器）
+### 备选：`dsh plugin`
+
+```bash
+git clone https://github.com/liyang52520/dsh-web-login.git /opt/dsh-web-login
+dsh plugin --profile web add /opt/dsh-web-login
+systemctl restart dsh
+```
+
+本包声明了 `dsh.bundle`，所以 `dsh plugin add` **本应**把它自动追加进 `dsh.profile.bundles` 并激活、不用手写上面那段 patch。
+
+> ⚠️ **但在 dsh `0.2.0-rc.2` 上实测这一步不生效**：pnpm 确实装上了包（`pnpm add` 单独跑完全正常，包会落成真实目录），可 `dsh plugin` 随后的注册步骤会把依赖回退掉 —— 结果是 `package.json` 的 `dependencies` 又变回 `{}`、`dsh.profile.bundles` 里也没有它，插件不会被加载。用 pnpm 12 和 11 都能复现，所以不是 pnpm 版本问题。
+>
+> 遇到这种情况就改用上面的「pnpm 直装」，或者退到下面的手动方式。
+
+### 备选：不用 pnpm（手动复制）
 
 ```bash
 DSH_HOME=${DSH_HOME:-$HOME/.dsh}
-git clone git@github.com:liyang52520/dsh-web-login.git /opt/dsh-web-login
+git clone https://github.com/liyang52520/dsh-web-login.git /opt/dsh-web-login
+PROFILE="$DSH_HOME/profiles/web"
 
-# 复制成真实目录（不要用符号链接：Node 会把 import.meta.url 解析成链接目标，
-# 导致插件定位不到前端产物）
-mkdir -p "$DSH_HOME/profiles/web/node_modules"
-cp -a /opt/dsh-web-login "$DSH_HOME/profiles/web/node_modules/dsh-web-login"
+mkdir -p "$PROFILE/node_modules/dsh-web-login"
+git -C /opt/dsh-web-login archive HEAD | tar -x -C "$PROFILE/node_modules/dsh-web-login"
 
-# 写入 profile 用户补丁层
-cat > "$DSH_HOME/profiles/web/cordis.patch.yml" <<'EOF'
+cat > "$PROFILE/cordis.patch.yml" <<'EOF'
 - insert:
     - id: web-login
       name: dsh-web-login
 EOF
 
-sudo systemctl restart dsh
+systemctl restart dsh
 ```
 
-> 注意：插件通过 `import.meta.url` 与 `$DSH_HOME/profiles/node_modules` 定位前端产物。用符号链接安装会让 `import.meta.url` 指向源目录，此时若前端包不在上溯路径里，`/index.html` 会退化为不设防（`/` 仍受保护）。方式二用 `cp -a` 复制成真实目录可以规避；真的遇到时服务日志会打印明确警告，也可以直接用配置项 `indexHtml` 指定路径。
+这样升级就是 `git -C /opt/dsh-web-login pull` 后重跑那段 `git archive`。
+
+> 关于符号链接：插件靠 `import.meta.url` 与 `$DSH_HOME/profiles/node_modules` 定位前端产物。若你把插件目录**以符号链接**放进 `node_modules`（例如从与 profile 无关的路径链过来），`import.meta.url` 会解析成链接目标，前端包可能不在上溯路径里，`/index.html` 就会退化为不设防（`/` 仍受保护）。上面三种方式都不会产生这种情况；真的遇到了，服务日志会打印明确警告，也可以用配置项 `indexHtml` 指定路径兜底。
 
 ### 验证安装
 
