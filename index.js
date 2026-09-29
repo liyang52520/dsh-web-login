@@ -74,8 +74,34 @@ const DEFAULTS = {
 	lockoutSeconds: 300,
 	clientIpHeader: "x-real-ip",
 	allowLoopbackSetup: false,
-	indexHtml: ""
+	indexHtml: "",
+	unlockRemoteSettings: true
 };
+
+/**
+ * Head script making a non-loopback browser count as the trusted local host.
+ *
+ * Harness decides host-side settings persistence from the browser's own
+ * hostname:
+ *
+ *     const transport = globalThis.__DSH_TRANSPORT__;
+ *     isLoopback: transport?.ownsHost === true || pageLocation === void 0
+ *                 || isLoopbackHostname(pageLocation.hostname)
+ *     const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";
+ *
+ * `isLoopbackHostname` only accepts `localhost`, `[::1]` and `127/8`, so any
+ * deployment reached by public IP or domain lands on "memory" persistence: the
+ * settings surface reports "settings are unavailable in this browser" and the
+ * Models/provider tabs stay blank.
+ *
+ * `ownsHost` is the first clause of that expression and Harness never populates
+ * it, so declaring it here makes the page count as host-attached without
+ * rewriting any JavaScript. It only ever reaches a browser that already passed
+ * this gate, because the index is rendered only for an authenticated request.
+ */
+const TRANSPORT_HOOK_SCRIPT =
+	"globalThis.__DSH_TRANSPORT__ = globalThis.__DSH_TRANSPORT__ || {};" +
+	"globalThis.__DSH_TRANSPORT__.ownsHost = true;";
 
 //#region encoding helpers
 
@@ -202,7 +228,8 @@ function readConfig(raw) {
 		lockoutSeconds: positiveInt(source.lockoutSeconds, DEFAULTS.lockoutSeconds, "lockoutSeconds"),
 		clientIpHeader: text(source.clientIpHeader, DEFAULTS.clientIpHeader, "clientIpHeader").toLowerCase(),
 		allowLoopbackSetup: boolean(source.allowLoopbackSetup, DEFAULTS.allowLoopbackSetup, "allowLoopbackSetup"),
-		indexHtml: text(source.indexHtml, DEFAULTS.indexHtml, "indexHtml")
+		indexHtml: text(source.indexHtml, DEFAULTS.indexHtml, "indexHtml"),
+		unlockRemoteSettings: boolean(source.unlockRemoteSettings, DEFAULTS.unlockRemoteSettings, "unlockRemoteSettings")
 	};
 }
 
@@ -736,6 +763,23 @@ export function apply(ctx, config) {
 		() => ctx.webServer.register({ kind: "exact", path: LOGOUT_PATH, handler: handleLogout }),
 		"dsh-web-login: logout route"
 	);
+
+	/*
+	 * Remote browsers read as non-loopback, which costs them the host settings
+	 * surface. Declare the unused transport hook so a deployment reached by IP
+	 * or domain keeps the Models/provider pages working. Applied by
+	 * `webServer.renderIndex`, which runs for the index only after this gate and
+	 * Harness's own browser authentication have both admitted the request.
+	 */
+	if (resolved.unlockRemoteSettings) {
+		ctx.effect(
+			() =>
+				ctx.on("webserver/index-inject", (table) => {
+					table.push({ kind: "script", placement: "head", text: TRANSPORT_HOOK_SCRIPT });
+				}),
+			"dsh-web-login: remote host-settings unlock"
+		);
+	}
 
 	void stateReady.then(() => {
 		if (loadError !== undefined) {

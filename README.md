@@ -130,8 +130,44 @@ dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 | `clientIpHeader` | `x-real-ip` | 从哪个请求头取真实客户端 IP 做限流；置空串则用 socket 地址 |
 | `allowLoopbackSetup` | `false` | 允许本机来源跳过初始化口令 |
 | `indexHtml` | `""` | 手动指定前端 `index.html` 路径，留空则自动定位 |
+| `unlockRemoteSettings` | `true` | 让远程（非回环）浏览器也能用 host 侧设置，见下节 |
 
 `clientIpHeader` 默认信任 `X-Real-IP`。这是成立的，因为 Harness 只监听回环地址，只有 nginx 能到达该端口，而 nginx 的 `proxy_set_header X-Real-IP $remote_addr` 会覆盖客户端伪造的值。**如果你把 Harness 直接暴露到公网（不推荐），这个头就是可伪造的，应置空。**
+
+## 远程访问与设置（`unlockRemoteSettings`）
+
+Harness 依据**浏览器地址栏的 hostname**决定 host 侧设置是否可用：
+
+```js
+const transport = globalThis.__DSH_TRANSPORT__;
+isLoopback: transport?.ownsHost === true || pageLocation === void 0
+            || isLoopbackHostname(pageLocation.hostname)   // 只认 localhost / [::1] / 127.x
+const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";
+```
+
+用公网 IP 或域名访问时不是回环，设置被降级为 `memory` 模式，于是：
+
+- 设置界面（模型 / 提供商 / 插件配置 / 常规）报 `settings are unavailable in this browser`，或整页空白
+- 预览版说明弹窗每次刷新都会重现（确认状态只存在浏览器内存里）
+
+`ownsHost` 是上面表达式里的第一个子句，而 Harness **从不给它赋值** —— 是个空着的钩子。本插件通过官方扩展点 `webserver/index-inject` 往页头注入一行：
+
+```js
+globalThis.__DSH_TRANSPORT__ = globalThis.__DSH_TRANSPORT__ || {};
+globalThis.__DSH_TRANSPORT__.ownsHost = true;
+```
+
+**不改任何 JavaScript、不改 Harness 安装目录、零运行时开销，且升级 Harness 后依然有效。** 这也是 `dsh-public-access` 采用的办法；相比之下，靠字符串改写客户端 bundle（如 `dsh-web-pass`、`dsh-web-auth-gateway`）会在 Harness 改动表达式时静默失效。
+
+**为什么是安全的**：注入只出现在本插件返回的 index 里，而本插件只在**密码门 + Harness 自身鉴权都通过**之后才返回 index。所以它到达不了未登录的人。服务端的 Host/Origin 信任栅栏完全不涉及这个变量。
+
+**副作用与关闭方式**：开启后远程浏览器获得与本机访问同等的 host 设置读写能力。如果你不希望如此（例如只想让远程用户看不能改），置 `false`：
+
+```yaml
+- id: web-login
+  config:
+    unlockRemoteSettings: false
+```
 
 ## 日常操作
 
