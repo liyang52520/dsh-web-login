@@ -32,7 +32,7 @@ dsh web: http://127.0.0.1:3080/?token=0Ncme-2o6j0SI2MKI0MkRzxDc9qtAdK3fhIx0k7kwe
 - **记住我**：勾选后默认 30 天，不勾默认 12 小时，两者都可配
 - **连续失败锁定**：同一来源失败 5 次锁定 300 秒，按真实客户端 IP 计数
 - **审计日志**：登录成功/失败、改密、锁定、栅栏拒绝都往 journal 打一行结构化记录（不含密码内容）
-- **在线改密码**：`/__account`，验当前密码后换新，并轮换会话密钥（其它设备立即失效）
+- **在 Harness 设置页里管理**：登录门禁的独立设置页，可看状态、改密码、退出登录、重置密码
 - **部署自检**：启动探测信任栅栏，Host 被拒时直接告诉你该加哪个 `--trusted-host`
 - **远程也能用设置界面**：见下方 `unlockRemoteSettings`
 - **服务重启不用重抄 token**：登录态还在时自动用新进程的 token 补签 Harness 会话
@@ -223,11 +223,26 @@ globalThis.__DSH_TRANSPORT__.ownsHost = true;
 
 ## 日常操作
 
-**退出登录**：访问 `http://<你的地址>/__logout`。它会同时清掉本插件的 cookie 和 Harness 的会话 cookie，两者都失效才算真的退出。
+全部集中在 **Harness 设置页 → 登录门禁**（左侧栏齿轮 → 登录门禁）。不需要记任何 URL。
 
-**改密码**：登录状态下访问 `http://<你的地址>/__account`，输当前密码 + 新密码即可。改完会**轮换会话密钥**，其它设备上的登录态立即失效，当前这台保持登录。
+这个页面显示：
 
-**忘记密码**（连当前密码也不记得了）：停服务，编辑 `$DSH_HOME/.credentials.yaml`，删掉 `dsh-web-login/state` 那一段，重启。下次打开页面会重新进入首次设置流程。
+- 密码保护是否已启用、本机登录态是否有效
+- 「记住我」时长、不勾选时的时长、失败锁定策略
+- **当前被锁定中的来源 IP**（还剩多少秒、累计失败几次）
+- 远程浏览器能否使用 host 侧设置
+
+提供的操作：
+
+| 操作 | 作用 |
+|---|---|
+| 修改密码 | 验当前密码 → 换新 → **轮换会话密钥**，其它设备的登录态立即失效，当前这台保持 |
+| 退出登录 | 只清掉本机登录态（本插件的 cookie + Harness 的会话 cookie） |
+| 重置密码 | 验当前密码 → **删除密码记录**，所有设备都需要重新走首次设置 |
+
+> 若设置页因为某种原因打不开，同样的操作也有直接的 URL：`/__account` 是改密码表单，`/__logout` 是退出登录（GET 即可）。
+
+**忘记密码**（连当前密码也不记得了，上面的操作都用不了）：停服务，编辑 `$DSH_HOME/.credentials.yaml`，删掉 `dsh-web-login/state` 那一段，重启。下次打开页面会重新进入首次设置流程。
 
 ```yaml
 dsh-web-login/state:        # ← 连下面几行一起删
@@ -237,15 +252,6 @@ dsh-web-login/state:        # ← 连下面几行一起删
     algorithm: scrypt
     # ...
 ```
-
-**卸载**：
-
-```bash
-dsh plugin --profile web remove dsh-web-login
-sudo systemctl restart dsh
-```
-
-手动安装的则删掉 `$DSH_HOME/profiles/web/node_modules/dsh-web-login` 并把 `cordis.patch.yml` 改回 `[]`。
 
 ## 工作原理
 
@@ -278,7 +284,11 @@ sudo systemctl restart dsh
 | `/index.html` | 同上（仅当能定位到前端产物时注册） |
 | `/__login` | 登录 / 首次设置表单 |
 | `/__logout` | 清理登录态 |
-| `/__account` | 改密码（仅在已登录时可达，否则跳回 `/`） |
+| `/__account` | 改密码表单（仅在已登录时可达，否则跳回 `/`） |
+| `/__api/status` | 设置页读取状态（GET，需登录态） |
+| `/__api/logout` | 设置页退出登录（POST，需登录态） |
+| `/__api/password` | 设置页改密码（POST，需登录态） |
+| `/__api/reset` | 设置页重置密码（POST，需登录态） |
 
 ## 审计日志
 
@@ -382,14 +392,15 @@ ssh -N -L 3080:127.0.0.1:3080 user@你的服务器
 npm test          # 等价于 node --test
 ```
 
-HTTP 层不在测试覆盖内（需要 Harness 上下文），那部分是对着真实实例验证的。
+浏览器半边也在覆盖内：测试会装载 `client.js`，用真的 React 驱动它的模块封装，检查模块 id、slot 注册形状和渲染出来的内容（状态表、锁定列表、错误提示）。HTTP 层不在覆盖内（需要 Harness 上下文），那部分是对着真实实例验证的。
 
 ## 文件结构
 
 ```
 .
-├── index.js            # 插件主体：路由接管、密码存储、cookie、限流
+├── index.js            # 宿主半边：路由接管、密码存储、cookie、限流、/__api/*
 ├── page.js             # 登录页 / 首次设置页 / 提示页的 HTML 与样式
+├── client.js           # 浏览器半边：Harness 设置页里的「登录门禁」
 ├── cordis.patch.yml    # bundle 补丁：把本插件插入 profile 根
 ├── package.json        # 声明 dsh.bundle，使 dsh plugin add 能自动激活
 └── README.md

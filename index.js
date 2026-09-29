@@ -52,6 +52,16 @@ const LOGIN_PATH = "/__login";
 const LOGOUT_PATH = "/__logout";
 /** Route owning the change-password form (reachable only while already gated). */
 const ACCOUNT_PATH = "/__account";
+/** Prefix owning the JSON surface the browser-side settings page talks to. */
+const API_PREFIX = "/__api";
+/** Status endpoint consumed by the settings page. */
+const STATUS_PATH = `${API_PREFIX}/status`;
+/** Logout endpoint for the settings page. */
+const LOGOUT_API_PATH = `${API_PREFIX}/logout`;
+/** Change-password endpoint for the settings page. */
+const PASSWORD_API_PATH = `${API_PREFIX}/password`;
+/** Reset endpoint: wipes the stored password so first-run setup happens again. */
+const RESET_API_PATH = `${API_PREFIX}/reset`;
 /** Prefix every audit line shares, so operators can grep it out of journald. */
 const AUDIT_PREFIX = "dsh web-login: audit";
 /** Largest accepted form body. */
@@ -375,6 +385,17 @@ class FailureTracker {
 		return { failures: entry.failures, retryAfter: this.retryAfter(ip), locking };
 	}
 
+	/** Every address currently locked out, for the settings page. */
+	locked() {
+		const now = Date.now();
+		const out = [];
+		for (const [ip, entry] of this.entries) {
+			const remaining = entry.blockedUntil - now;
+			if (remaining > 0) out.push({ ip, retryAfter: Math.ceil(remaining / 1000), failures: entry.failures });
+		}
+		return out;
+	}
+
 	/** Clear one address after a successful check. */
 	succeed(ip) {
 		this.entries.delete(ip);
@@ -419,6 +440,32 @@ function sendHtml(req, res, status, html, extra) {
 function sendDocument(req, res, html) {
 	res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 	res.end(req.method === "HEAD" ? undefined : html);
+}
+
+/** Send a JSON response for the browser-side settings page. */
+function sendJson(req, res, status, body, extra) {
+	res.writeHead(status, { ...GATE_HEADERS, "content-type": "application/json; charset=utf-8", ...extra });
+	res.end(req.method === "HEAD" ? undefined : `${JSON.stringify(body)}\n`);
+}
+
+/** Read a small JSON request body, or undefined when it is unusable. */
+async function readJson(req) {
+	const contentType = req.headers["content-type"];
+	const media = typeof contentType === "string" ? contentType.split(";", 1)[0].trim().toLowerCase() : "";
+	if (media !== "application/json") return undefined;
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of req) {
+		size += chunk.length;
+		if (size > MAX_BODY_BYTES) return undefined;
+		chunks.push(chunk);
+	}
+	try {
+		const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+		return typeof parsed === "object" && parsed !== null ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Send a see-other redirect. */
@@ -916,6 +963,131 @@ export function apply(ctx, config) {
 		redirect(res, "/", authority === undefined ? {} : { "set-cookie": clearCookies(authority) });
 	}
 
+
+	/**
+	 * The JSON surface the browser-side settings page talks to. Every endpoint
+	 * requires a valid gate cookie, and every mutating one additionally requires
+	 * a same-origin `Origin` when the browser sends one, so a third-party page
+	 * cannot drive them through a form post.
+	 */
+	async function handleApi(req, res, pathname) {
+		const authority = requestAuthority(req.headers);
+		if (authority === undefined) {
+			sendJson(req, res, 400, { error: "bad request" });
+			return;
+		}
+		await stateReady;
+		if (loadError !== undefined) {
+			sendJson(req, res, 503, { error: `login gate unavailable: ${loadError.message}` });
+			return;
+		}
+		const gated =
+			state !== undefined && decodeCookie(cookieValue(req.headers.cookie, COOKIE_NAME), state.sessionSecret, authority) !== undefined;
+		if (!gated) {
+			sendJson(req, res, 401, { error: "not authenticated" });
+			return;
+		}
+		const address = clientAddress(req, resolved);
+		if (req.method === "POST") {
+			const origin = req.headers.origin;
+			if (typeof origin === "string" && origin !== "" && origin !== `http://${authority}` && origin !== `https://${authority}`) {
+				audit("api-cross-origin-rejected", { ip: address, host: authority, origin });
+				sendJson(req, res, 403, { error: "cross-origin request rejected" });
+				return;
+			}
+		}
+
+		if (pathname === STATUS_PATH) {
+			if (req.method !== "GET" && req.method !== "HEAD") {
+				sendJson(req, res, 405, { error: "method not allowed" });
+				return;
+			}
+			sendJson(req, res, 200, {
+				passwordSet: state !== undefined,
+				locked: failures.locked(),
+				config: {
+					title: resolved.title,
+					passwordMinLength: resolved.passwordMinLength,
+					rememberDays: resolved.rememberDays,
+					sessionHours: resolved.sessionHours,
+					maxFailures: resolved.maxFailures,
+					lockoutSeconds: resolved.lockoutSeconds,
+					unlockRemoteSettings: resolved.unlockRemoteSettings,
+					pageTheme: resolved.pageTheme
+				}
+			});
+			return;
+		}
+
+		if (req.method !== "POST") {
+			sendJson(req, res, 405, { error: "method not allowed" });
+			return;
+		}
+		const body = await readJson(req);
+		if (body === undefined) {
+			sendJson(req, res, 400, { error: "body must be a JSON object" });
+			return;
+		}
+
+		if (pathname === LOGOUT_API_PATH) {
+			audit("logout", { ip: address, host: authority });
+			sendJson(req, res, 200, { ok: true }, { "set-cookie": clearCookies(authority) });
+			return;
+		}
+
+		const waiting = failures.retryAfter(address);
+		if (waiting > 0) {
+			sendJson(req, res, 429, { error: `too many attempts; retry in ${String(waiting)}s`, retryAfter: waiting }, { "retry-after": String(waiting) });
+			return;
+		}
+
+		if (pathname === RESET_API_PATH) {
+			if (!(await verifyPassword(typeof body.current === "string" ? body.current : "", state))) {
+				const outcome = failures.fail(address);
+				audit("reset-failed", { ip: address, failures: outcome.failures });
+				if (outcome.locking) audit("lockout", { ip: address, seconds: resolved.lockoutSeconds });
+				sendJson(req, res, 401, { error: "当前密码不正确" });
+				return;
+			}
+			await ctx.credentials.deleteRecord(RECORD_KEY);
+			state = undefined;
+			failures.succeed(address);
+			audit("password-reset", { ip: address, host: authority });
+			process.stdout.write("dsh web-login: 密码记录已清除，下次打开页面将重新进入首次设置\n");
+			sendJson(req, res, 200, { ok: true, restart: "setup" }, { "set-cookie": clearCookies(authority) });
+			return;
+		}
+
+		if (pathname === PASSWORD_API_PATH) {
+			if (!(await verifyPassword(typeof body.current === "string" ? body.current : "", state))) {
+				const outcome = failures.fail(address);
+				audit("password-change-failed", { ip: address, failures: outcome.failures });
+				if (outcome.locking) audit("lockout", { ip: address, seconds: resolved.lockoutSeconds });
+				sendJson(req, res, 401, { error: "当前密码不正确" });
+				return;
+			}
+			const next = typeof body.next === "string" ? body.next : "";
+			if (next.length < resolved.passwordMinLength) {
+				sendJson(req, res, 400, { error: `新密码至少需要 ${String(resolved.passwordMinLength)} 位` });
+				return;
+			}
+			const rotated = await createState(next);
+			await ctx.credentials.modifyRecord(RECORD_KEY, async () => ({ kind: "grant", payload: rotated }));
+			state = rotated;
+			failures.succeed(address);
+			audit("password-changed", { ip: address, host: authority, sessions: "rotated", via: "settings" });
+			const lifetime = resolved.rememberDays * DAY_SECONDS;
+			const expiresAt = Date.now() + lifetime * 1000;
+			const value = encodeCookie({ authority, expiresAt }, rotated.sessionSecret);
+			sendJson(req, res, 200, { ok: true }, {
+				"set-cookie": `${COOKIE_NAME}=${value}; Max-Age=${lifetime}; Path=/; Expires=${new Date(expiresAt).toUTCString()}; HttpOnly; SameSite=Strict`
+			});
+			return;
+		}
+
+		sendJson(req, res, 404, { error: "unknown endpoint" });
+	}
+
 	ctx.effect(
 		() => ctx.webServer.register({ kind: "exact", path: "/", handler: handleDocument }),
 		"dsh-web-login: document route /"
@@ -938,6 +1110,12 @@ export function apply(ctx, config) {
 		() => ctx.webServer.register({ kind: "exact", path: ACCOUNT_PATH, handler: handleAccount }),
 		"dsh-web-login: account route"
 	);
+	for (const path of [STATUS_PATH, LOGOUT_API_PATH, PASSWORD_API_PATH, RESET_API_PATH]) {
+		ctx.effect(
+			() => ctx.webServer.register({ kind: "exact", path, handler: (req, res) => handleApi(req, res, path) }),
+			`dsh-web-login: api route ${path}`
+		);
+	}
 
 	/*
 	 * Remote browsers read as non-loopback, which costs them the host settings
@@ -1021,6 +1199,12 @@ export const internals = {
 	COOKIE_NAME,
 	COOKIE_VERSION,
 	ACCOUNT_PATH,
+	API_PREFIX,
+	STATUS_PATH,
+	LOGOUT_API_PATH,
+	PASSWORD_API_PATH,
+	RESET_API_PATH,
+	readJson,
 	LOGIN_PATH,
 	LOGOUT_PATH,
 	TRANSPORT_HOOK_SCRIPT,
