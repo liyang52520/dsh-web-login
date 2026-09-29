@@ -21,57 +21,120 @@ window.__ModuleLoader__.load({
 		const React = require("react");
 		const h = React.createElement;
 
-		/** Harness's own tokens, with the shipped values as fallbacks. */
+		/*
+		 * The design-system Button, so buttons match the panel exactly rather than
+		 * approximating it. It is served by the shell's module table; if a future
+		 * Harness stops providing it, fall back to a plain styled button instead of
+		 * losing the whole page.
+		 */
+		let Button;
+		try {
+			Button = require("@deepseek-ai/dsh-client-ui-primitives").Button;
+		} catch {
+			Button = undefined;
+		}
+
+		/**
+		 * Every value here was read out of a live Harness settings panel with
+		 * getComputedStyle, not guessed: inputs are 32px/radius 8/border 16% and
+		 * grouped cards are a borderless #f5f6f7 surface at radius 12 with 14px
+		 * 16px padding. Tokens come first so the panel follows the active theme.
+		 */
 		const T = {
 			labelPrimary: "var(--dsw-alias-label-primary, #0f1115)",
 			labelSecondary: "var(--dsw-alias-label-secondary, #61666b)",
 			labelTertiary: "var(--dsw-alias-label-tertiary, #81858c)",
-			border: "var(--dsw-alias-border-l2, rgb(0 0 0 / 10%))",
-			base: "var(--dsw-alias-bg-base, #fff)",
+			surface: "var(--dsw-alias-bg-module-platform, #f5f6f7)",
+			inputBg: "var(--dsw-alias-bg-base, #fff)",
+			inputBorder: "var(--dsw-alias-border-l4, rgb(0 0 0 / 16%))",
 			hover: "var(--dsw-alias-interactive-bg-hover-solid, #f1f3f5)",
-			brand: "var(--dsw-alias-brand-primary, #0f1115)",
-			onBrand: "var(--dsw-alias-label-primary-foreground, #fff)",
 			error: "var(--dsw-alias-state-error-primary, #ec1313)"
 		};
 
+		/** 14px is the settings panel's body size; everything here follows it. */
+		const TEXT = { fontSize: 14, lineHeight: "22px" };
+
 		const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Helvetica, Arial, sans-serif';
-		const MONO = '"SF Mono", "JetBrains Mono", Consolas, Menlo, monospace';
+
+		/** A borderless grouped card, matching the panel's own setup cards. */
+		const card = {
+			background: T.surface,
+			borderRadius: 12,
+			padding: "14px 16px",
+			marginBottom: 24
+		};
+
+		/** Label above an input, as inside a native setup card. */
+		const fieldLabel = {
+			display: "block",
+			fontSize: 14,
+			lineHeight: "22px",
+			color: T.labelSecondary,
+			marginBottom: 6
+		};
 
 		const field = {
 			width: "100%",
 			height: 32,
-			padding: "0 8px",
+			padding: "0 10px",
 			fontFamily: FONT,
-			fontSize: 13,
+			fontSize: 14,
 			color: T.labelPrimary,
-			background: T.base,
-			border: `1px solid ${T.border}`,
+			background: T.inputBg,
+			border: `1px solid ${T.inputBorder}`,
 			borderRadius: 8,
 			outline: "none",
 			boxSizing: "border-box"
 		};
 
-		function button(variant) {
-			return {
-				height: 32,
-				padding: "0 14px",
-				fontFamily: FONT,
-				fontSize: 13,
-				fontWeight: 500,
-				borderRadius: 8,
-				cursor: "pointer",
-				border: variant === "primary" ? "0" : `1px solid ${T.border}`,
-				background: variant === "primary" ? T.brand : "transparent",
-				color: variant === "primary" ? T.onBrand : T.labelPrimary
-			};
+		/** Section heading inside the panel. */
+		const heading = {
+			margin: "0 0 6px",
+			fontSize: 16,
+			lineHeight: "24px",
+			fontWeight: 600,
+			color: T.labelPrimary
+		};
+
+		/** Small caption introducing a group of rows. */
+		const groupLabel = {
+			margin: "0 0 10px",
+			fontSize: 14,
+			lineHeight: "22px",
+			fontWeight: 600,
+			color: T.labelPrimary
+		};
+
+		/** One `label ... value` row, matching the panel's read-only rows. */
+		function row(key, label, value) {
+			return h("div", { key, style: { display: "flex", alignItems: "baseline", gap: 16, padding: "7px 0" } }, [
+				h("span", { key: "k", style: { ...TEXT, flex: "1 1 auto", minWidth: 0, color: T.labelPrimary } }, label),
+				h("span", { key: "v", style: { ...TEXT, flex: "0 1 auto", maxWidth: "58%", textAlign: "right", color: T.labelSecondary, wordBreak: "break-word" } }, value)
+			]);
 		}
 
-		/** One `label: value` row of the status table. */
-		function row(key, label, value) {
-			return h("div", { key, style: { display: "flex", gap: 12, padding: "6px 0", fontSize: 13, lineHeight: "20px" } }, [
-				h("span", { key: "k", style: { flex: "0 0 132px", color: T.labelSecondary } }, label),
-				h("span", { key: "v", style: { color: T.labelPrimary, wordBreak: "break-word" } }, value)
-			]);
+		/** A pill button. The real primitive is used when it resolves. */
+		function pill(variant, props) {
+			const base = {
+				height: 32,
+				padding: "0 16px",
+				fontFamily: FONT,
+				fontSize: 14,
+				fontWeight: 500,
+				borderRadius: 999,
+				cursor: props.disabled === true ? "default" : "pointer",
+				opacity: props.disabled === true ? 0.5 : 1
+			};
+			if (Button !== undefined) return h(Button, { ...props, variant });
+			return h("button", {
+				...props,
+				style: {
+					...base,
+					border: variant === "primary" ? "0" : `1px solid ${T.inputBorder}`,
+					background: variant === "primary" ? "var(--dsw-alias-brand-primary, #0f1115)" : "transparent",
+					color: variant === "primary" ? "var(--dsw-alias-label-primary-foreground, #fff)" : T.labelPrimary
+				}
+			});
 		}
 
 		/**
@@ -84,12 +147,11 @@ window.__ModuleLoader__.load({
 		 * @returns the section element tree.
 		 */
 		function sectionView({ status, form, notice, busy, handlers }) {
-			const children = [];
-
-			children.push(
-				h("p", { key: "lede", style: { margin: "0 0 16px", fontSize: 13, lineHeight: "20px", color: T.labelSecondary } },
-					"这个页面控制 DeepSeek Harness 的密码门禁。它独立于 Harness 自己的登录态。")
-			);
+			const children = [
+				h("h2", { key: "h", style: heading }, "登录门禁"),
+				h("p", { key: "lede", style: { margin: "0 0 24px", ...TEXT, color: T.labelSecondary } },
+					"密码门禁独立于 Harness 自己的登录态：先过这道门，才轮到 Harness 的会话。")
+			];
 
 			if (notice !== undefined && notice !== null) {
 				children.push(
@@ -98,109 +160,88 @@ window.__ModuleLoader__.load({
 						role: "status",
 						style: {
 							margin: "0 0 16px",
-							padding: "8px 10px",
-							fontSize: 13,
-							lineHeight: "20px",
+							padding: "8px 12px",
+							...TEXT,
 							borderRadius: 8,
 							color: notice.kind === "error" ? T.error : T.labelPrimary,
 							background: notice.kind === "error" ? "transparent" : T.hover,
-							border: `1px solid ${notice.kind === "error" ? T.error : T.border}`
+							border: `1px solid ${notice.kind === "error" ? T.error : "transparent"}`
 						}
 					}, notice.text)
 				);
 			}
 
 			if (status === undefined || status === null) {
-				children.push(h("p", { key: "loading", style: { margin: 0, fontSize: 13, color: T.labelTertiary } }, "正在读取状态…"));
+				children.push(h("p", { key: "loading", style: { margin: 0, ...TEXT, color: T.labelTertiary } }, "正在读取状态…"));
 			} else {
 				const locked = Array.isArray(status.locked) ? status.locked : [];
 				children.push(
-					h("div", { key: "status", style: { marginBottom: 24 } }, [
+					h("div", { key: "status-card", style: card }, [
 						row("passwordSet", "密码保护", status.passwordSet ? "已启用" : "未设置"),
 						row("session", "本机登录态", "有效"),
 						row("remember", "「记住我」时长", `${String(status.config.rememberDays)} 天`),
-						row("session", "不勾选时", `${String(status.config.sessionHours)} 小时`),
-						row("lockout", "失败锁定策略", `连续 ${String(status.config.maxFailures)} 次失败后锁定 ${String(status.config.lockoutSeconds)} 秒`),
+						row("short", "不勾选时", `${String(status.config.sessionHours)} 小时`),
+						row("lockout", "失败锁定", `${String(status.config.maxFailures)} 次失败后锁定 ${String(status.config.lockoutSeconds)} 秒`),
+						row("remote", "远程浏览器可用设置", status.config.unlockRemoteSettings ? "是" : "否"),
 						row(
 							"locked",
 							"当前锁定中的来源",
 							locked.length === 0
 								? "无"
-								: locked.map((entry) => `${entry.ip}（还剩 ${String(entry.retryAfter)} 秒，累计 ${String(entry.failures)} 次）`).join("；")
-						),
-						row("remote", "远程浏览器可用设置", status.config.unlockRemoteSettings ? "是" : "否")
+								: locked.map((entry) => `${entry.ip}（${String(entry.retryAfter)} 秒）`).join("、")
+						)
 					])
 				);
 			}
 
 			children.push(
-				h("h3", { key: "pw-title", style: { margin: "0 0 4px", fontSize: 14, lineHeight: "22px", fontWeight: 600, color: T.labelPrimary } }, "修改密码"),
-				h("form", {
-					key: "pw",
-					onSubmit: (event) => {
-						event.preventDefault();
-						handlers.onPassword();
-					}
-				}, [
-					h("label", { key: "l1", style: { display: "block", margin: "12px 0 6px", fontSize: 13, color: T.labelSecondary } }, "当前密码"),
-					h("input", {
-						key: "current",
-						type: "password",
-						value: form.current,
-						autoComplete: "current-password",
-						style: field,
-						onChange: (event) => handlers.onField("current", event.target.value)
-					}),
-					h("label", { key: "l2", style: { display: "block", margin: "12px 0 6px", fontSize: 13, color: T.labelSecondary } }, "新密码"),
-					h("input", {
-						key: "next",
-						type: "password",
-						value: form.next,
-						autoComplete: "new-password",
-						style: field,
-						onChange: (event) => handlers.onField("next", event.target.value)
-					}),
-					h("label", { key: "l3", style: { display: "block", margin: "12px 0 6px", fontSize: 13, color: T.labelSecondary } }, "确认新密码"),
-					h("input", {
-						key: "confirm",
-						type: "password",
-						value: form.confirm,
-						autoComplete: "new-password",
-						style: field,
-						onChange: (event) => handlers.onField("confirm", event.target.value)
-					}),
-					h("button", {
-						key: "save",
-						type: "submit",
-						disabled: busy,
-						style: { ...button("primary"), marginTop: 16, opacity: busy ? 0.6 : 1 }
-					}, busy ? "提交中…" : "保存")
+				h("div", { key: "pw-group" }, [
+					h("div", { key: "pw-label", style: groupLabel }, "修改密码"),
+					h("form", {
+						key: "pw",
+						style: card,
+						onSubmit: (event) => {
+							event.preventDefault();
+							handlers.onPassword();
+						}
+					}, [
+						h("label", { key: "l1", htmlFor: "wl-current", style: fieldLabel }, "当前密码"),
+						h("input", {
+							key: "current", id: "wl-current", type: "password", value: form.current,
+							autoComplete: "current-password", style: field,
+							onChange: (event) => handlers.onField("current", event.target.value)
+						}),
+						h("label", { key: "l2", htmlFor: "wl-next", style: { ...fieldLabel, marginTop: 14 } }, "新密码"),
+						h("input", {
+							key: "next", id: "wl-next", type: "password", value: form.next,
+							autoComplete: "new-password", style: field,
+							onChange: (event) => handlers.onField("next", event.target.value)
+						}),
+						h("label", { key: "l3", htmlFor: "wl-confirm", style: { ...fieldLabel, marginTop: 14 } }, "确认新密码"),
+						h("input", {
+							key: "confirm", id: "wl-confirm", type: "password", value: form.confirm,
+							autoComplete: "new-password", style: field,
+							onChange: (event) => handlers.onField("confirm", event.target.value)
+						}),
+						h("div", { key: "save-row", style: { display: "flex", justifyContent: "flex-end", marginTop: 16 } },
+							pill("primary", { type: "submit", disabled: busy, children: busy ? "提交中…" : "保存" }))
+					])
 				])
 			);
 
 			children.push(
-				h("h3", { key: "session-title", style: { margin: "28px 0 4px", fontSize: 14, lineHeight: "22px", fontWeight: 600, color: T.labelPrimary } }, "会话"),
-				h("p", { key: "session-note", style: { margin: "0 0 12px", fontSize: 12, lineHeight: "19px", color: T.labelTertiary } },
-					"「退出登录」只清掉本机的登录态。「重置密码」会删除已保存的密码，所有设备都要重新设置。"),
-				h("div", { key: "actions", style: { display: "flex", gap: 8, flexWrap: "wrap" } }, [
-					h("button", {
-						key: "logout",
-						type: "button",
-						disabled: busy,
-						style: button("secondary"),
-						onClick: () => handlers.onLogout()
-					}, "退出登录"),
-					h("button", {
-						key: "reset",
-						type: "button",
-						disabled: busy,
-						style: { ...button("secondary"), color: T.error, borderColor: T.error },
-						onClick: () => handlers.onReset()
-					}, "重置密码")
+				h("div", { key: "session-group" }, [
+					h("div", { key: "session-label", style: groupLabel }, "会话"),
+					h("p", { key: "session-note", style: { margin: "0 0 14px", fontSize: 13, lineHeight: "20px", color: T.labelTertiary } },
+						"退出登录只清掉这台设备的登录态。重置密码会删除已保存的密码，所有设备都要重新设置。"),
+					h("div", { key: "actions", style: { display: "flex", gap: 8, flexWrap: "wrap" } }, [
+						pill("outline", { key: "logout", type: "button", disabled: busy, onClick: () => handlers.onLogout(), children: "退出登录" }),
+						pill("outline", { key: "reset", type: "button", disabled: busy, onClick: () => handlers.onReset(), style: { color: T.error }, children: "重置密码" })
+					])
 				])
 			);
 
-			return h("div", { style: { maxWidth: 520, fontFamily: FONT } }, children);
+			return h("div", { style: { maxWidth: 564, fontFamily: FONT } }, children);
 		}
 
 		/** Read one JSON endpoint, normalising transport and application failures. */

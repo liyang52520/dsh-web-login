@@ -59,6 +59,12 @@ async function loadClientHalf() {
 	assert.ok(captured !== undefined, "the bundle must register itself with the module loader");
 	const face = captured.factory((specifier) => {
 		if (specifier === "react") return React;
+		if (specifier === "@deepseek-ai/dsh-client-ui-primitives") {
+			/* Stand-in for the shell-provided design system. */
+			return {
+				Button: (props) => React.createElement("button", { "data-primitive": props.variant }, props.children)
+			};
+		}
 		throw new Error(`unexpected require(${JSON.stringify(specifier)})`);
 	});
 	return { spec: captured, face };
@@ -132,10 +138,23 @@ test("the section view renders the status table and both action groups", async (
 	assert.match(text, /密码保护/);
 	assert.match(text, /已启用/);
 	assert.match(text, /30 天/);
-	assert.match(text, /连续 5 次失败后锁定 300 秒/);
+	assert.match(text, /5 次失败后锁定 300 秒/);
 	assert.match(text, /203\.0\.113\.9/, "a locked source must be listed");
-	assert.match(text, /还剩 240 秒/);
+	assert.match(text, /240 秒/);
 	assert.match(text, /修改密码/);
+	/*
+	 * Buttons must go through the design system rather than hand-rolled
+	 * elements. Nothing renders the tree here, so a Button usage shows up as an
+	 * element whose type is the component and whose props carry the variant.
+	 */
+	const buttons = [];
+	(function walk(node) {
+		if (node === null || typeof node !== "object") return;
+		if (Array.isArray(node)) return node.forEach(walk);
+		if (typeof node.type === "function" && typeof node.props?.variant === "string") buttons.push(node.props.variant);
+		if (node.props?.children !== undefined) walk(node.props.children);
+	})(element);
+	assert.deepEqual(buttons, ["primary", "outline", "outline"], "save plus the two session actions");
 	assert.match(text, /退出登录/);
 	assert.match(text, /重置密码/);
 });
