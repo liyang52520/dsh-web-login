@@ -181,19 +181,31 @@ window.__ModuleLoader__.load({
 			]));
 		}
 
+		/** An inline error line for use inside a dialog. */
+		function dialogError(text) {
+			if (text === undefined || text === null || text === "") return null;
+			return h("div", {
+				key: "error",
+				role: "alert",
+				style: { marginTop: 12, fontSize: 13, lineHeight: "20px", color: T.error }
+			}, text);
+		}
+
 		/**
 		 * Pure view for the settings page.
 		 * @param props.status - last `/__api/status` payload, or undefined while loading.
-		 * @param props.changeOpen - whether the change-password form is expanded.
+		 * @param props.changeOpen - whether the change-password dialog is open.
 		 * @param props.resetOpen - whether the reset dialog is open.
 		 * @param props.form - change-password draft `{ current, next, confirm }`.
+		 * @param props.changeError - error to show inside the change dialog.
 		 * @param props.resetPassword - current-password draft for the reset dialog.
-		 * @param props.notice - `{ kind: "ok" | "error", text }` to show, or undefined.
+		 * @param props.resetError - error to show inside the reset dialog.
+		 * @param props.notice - page-level `{ kind, text }`, or undefined.
 		 * @param props.busy - whether a request is in flight.
 		 * @param props.handlers - callbacks; see {@link WebLoginSection}.
 		 * @returns the section element tree.
 		 */
-		function sectionView({ status, changeOpen, resetOpen, form, resetPassword, notice, busy, handlers }) {
+		function sectionView({ status, changeOpen, resetOpen, form, changeError, resetPassword, resetError, notice, busy, handlers }) {
 			const change = form ?? { current: "", next: "", confirm: "" };
 			const children = [
 				h("h2", { key: "h", style: heading }, "登录门禁"),
@@ -255,19 +267,19 @@ window.__ModuleLoader__.load({
 				])
 			);
 
-			/*
-			 * Change password expands in place, the way the model settings page
-			 * reveals its custom-provider form, rather than occupying the page
-			 * permanently or hiding a routine action behind a dialog.
-			 */
-			if (changeOpen === true) {
-				children.push(
-					h("form", {
-						key: "change-form",
-						style: { ...card, marginTop: 16, marginBottom: 0 },
-						onSubmit: (event) => { event.preventDefault(); handlers.onPassword(); }
-					}, [
-						h("div", { key: "title", style: { ...groupLabel, marginBottom: 10 } }, "修改密码"),
+			const minLength = status?.config?.passwordMinLength;
+
+			/* Change password asks in a dialog too, so the page stays a summary. */
+			children.push(
+				dialog({
+					open: changeOpen === true,
+					onClose: () => handlers.onCancelChange(),
+					title: "修改密码",
+					description: minLength === undefined
+						? "改完会轮换会话密钥，其它设备上的登录态立即失效。"
+						: `至少 ${String(minLength)} 位。改完会轮换会话密钥，其它设备上的登录态立即失效。`
+				}, [
+					h("form", { key: "form", onSubmit: (event) => { event.preventDefault(); handlers.onPassword(); } }, [
 						textField("wl-current", "当前密码", {
 							value: change.current, autoComplete: "current-password", autoFocus: true,
 							onChange: (event) => handlers.onField("current", event.target.value)
@@ -280,13 +292,14 @@ window.__ModuleLoader__.load({
 							value: change.confirm, autoComplete: "new-password",
 							onChange: (event) => handlers.onField("confirm", event.target.value)
 						}),
-						h("div", { key: "row", style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 } }, [
+						dialogError(changeError),
+						h("div", { key: "row", style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 24 } }, [
 							pill("outline", { key: "cancel", type: "button", onClick: () => handlers.onCancelChange(), children: "取消" }),
 							pill("primary", { key: "save", type: "submit", disabled: busy, children: busy ? "保存中…" : "保存" })
 						])
 					])
-				);
-			}
+				])
+			);
 
 			/* Reset needs the current password, so it asks for it in the dialog. */
 			children.push(
@@ -300,6 +313,7 @@ window.__ModuleLoader__.load({
 						value: resetPassword ?? "", autoComplete: "current-password", autoFocus: true,
 						onChange: (event) => handlers.onResetField(event.target.value)
 					}, { first: true }),
+					dialogError(resetError),
 					h("div", { key: "row", style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 24 } }, [
 						pill("outline", { key: "cancel", type: "button", onClick: () => handlers.onCancelReset(), children: "取消" }),
 						pill("primary", {
@@ -337,6 +351,8 @@ window.__ModuleLoader__.load({
 			const [resetPassword, setResetPassword] = React.useState("");
 			const [changeOpen, setChangeOpen] = React.useState(false);
 			const [resetOpen, setResetOpen] = React.useState(false);
+			const [changeError, setChangeError] = React.useState(undefined);
+			const [resetError, setResetError] = React.useState(undefined);
 			const [notice, setNotice] = React.useState(undefined);
 			const [busy, setBusy] = React.useState(false);
 
@@ -359,24 +375,29 @@ window.__ModuleLoader__.load({
 				},
 				onOpenChange() {
 					setNotice(undefined);
+					setChangeError(undefined);
+					setForm({ current: "", next: "", confirm: "" });
 					setChangeOpen(true);
 				},
 				onCancelChange() {
 					setForm({ current: "", next: "", confirm: "" });
+					setChangeError(undefined);
 					setChangeOpen(false);
 				},
 				onOpenReset() {
 					setNotice(undefined);
+					setResetError(undefined);
 					setResetPassword("");
 					setResetOpen(true);
 				},
 				onCancelReset() {
 					setResetPassword("");
+					setResetError(undefined);
 					setResetOpen(false);
 				},
 				async onPassword() {
 					if (form.next !== form.confirm) {
-						setNotice({ kind: "error", text: "两次输入的新密码不一致" });
+						setChangeError("两次输入的新密码不一致");
 						return;
 					}
 					setBusy(true);
@@ -391,7 +412,8 @@ window.__ModuleLoader__.load({
 						setNotice({ kind: "ok", text: "密码已更新。其它设备上的登录态已失效。" });
 						void refresh();
 					} else {
-						setNotice({ kind: "error", text: result.body.error ?? "修改失败" });
+						/* Stay open so the failure is visible where the input was. */
+						setChangeError(result.body.error ?? "修改失败");
 					}
 				},
 				async onLogout() {
@@ -411,12 +433,13 @@ window.__ModuleLoader__.load({
 						window.location.reload();
 						return;
 					}
-					setResetOpen(false);
-					setNotice({ kind: "error", text: result.body.error ?? "重置失败" });
+					setResetError(result.body.error ?? "重置失败");
 				}
 			};
 
-			return sectionView({ status, changeOpen, resetOpen, form, resetPassword, notice, busy, handlers });
+			return sectionView({
+				status, changeOpen, resetOpen, form, changeError, resetPassword, resetError, notice, busy, handlers
+			});
 		}
 
 		/** Required service: the UI slot registry. */

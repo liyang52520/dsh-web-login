@@ -161,7 +161,9 @@ test("the section view renders the status table and both action groups", async (
 		changeOpen: true,
 		resetOpen: true,
 		form: { current: "", next: "", confirm: "" },
+		changeError: undefined,
 		resetPassword: "",
+		resetError: undefined,
 		notice: undefined,
 		busy: false,
 		handlers: {
@@ -187,13 +189,14 @@ test("the section view renders the status table and both action groups", async (
 	assert.deepEqual(
 		buttons,
 		["outline", "outline", "outline", "outline", "primary", "outline", "primary"],
-		"three actions, then cancel/save, then cancel/reset in the dialog"
+		"three page actions, then cancel/save and cancel/reset inside the two dialogs"
 	);
 
 	/* The change form must be revealed by a button, not always on the page. */
 	const collapsed = face.sectionView({
 		status: undefined, changeOpen: false, resetOpen: false,
-		form: { current: "", next: "", confirm: "" }, resetPassword: "", notice: undefined, busy: false,
+		form: { current: "", next: "", confirm: "" }, changeError: undefined,
+		resetPassword: "", resetError: undefined, notice: undefined, busy: false,
 		handlers: {}
 	});
 	const collapsedText = textOf(render(collapsed));
@@ -204,24 +207,37 @@ test("the section view renders the status table and both action groups", async (
 	assert.match(text, /重置密码/);
 });
 
-test("reset asks for confirmation through the native modal, not window.prompt", async () => {
+test("both password actions use the native modal, never window.prompt", async () => {
 	const { face } = await loadClientHalf();
-	const element = face.sectionView({
-		status: undefined, changeOpen: false, resetOpen: true,
-		form: { current: "", next: "", confirm: "" }, resetPassword: "", notice: undefined, busy: false,
-		handlers: {}
-	});
-	const modals = findAll(render(element), "div").filter((props) => props["data-primitive"] === "modal");
-	assert.equal(modals.length, 1, "the dialog must go through the design system Modal");
-	assert.equal(modals[0]["data-title"], "重置密码");
-	assert.match(textOf(render(element)), /请输入当前密码以确认/, "the consequence is spelled out in the dialog");
+	const base = {
+		status: {
+			passwordSet: true, locked: [],
+			config: { title: "t", passwordMinLength: 8, rememberDays: 30, sessionHours: 12, maxFailures: 5, lockoutSeconds: 300, unlockRemoteSettings: true }
+		},
+		form: { current: "", next: "", confirm: "" }, changeError: undefined,
+		resetPassword: "", resetError: undefined, notice: undefined, busy: false, handlers: {}
+	};
+
+	const both = render(face.sectionView({ ...base, changeOpen: true, resetOpen: true }));
+	const titles = findAll(both, "div").filter((p) => p["data-primitive"] === "modal").map((p) => p["data-title"]);
+	assert.deepEqual(titles, ["修改密码", "重置密码"], "each action gets its own dialog");
+	assert.match(textOf(both), /至少 8 位/, "the change dialog states the minimum length");
+
+	const reset = render(face.sectionView({ ...base, changeOpen: false, resetOpen: true }));
+	assert.match(textOf(reset), /请输入当前密码以确认/, "the consequence is spelled out");
+	assert.equal(textOf(reset).includes("确认新密码"), false, "the change dialog must not leak into the reset view");
+
+	/* A failed submit must surface inside the dialog, not behind it. */
+	const failed = render(face.sectionView({ ...base, changeOpen: true, resetOpen: false, changeError: "当前密码不正确" }));
+	assert.match(textOf(failed), /当前密码不正确/);
 });
 
 test("the section view renders before the status arrives, and shows notices", async () => {
 	const { face } = await loadClientHalf();
 	const loading = face.sectionView({
 		status: undefined,
-		form: { current: "", next: "", confirm: "" },
+		form: { current: "", next: "", confirm: "" }, changeError: undefined,
+		resetPassword: "", resetError: undefined,
 		notice: undefined,
 		busy: false,
 		handlers: {}
@@ -230,7 +246,8 @@ test("the section view renders before the status arrives, and shows notices", as
 
 	const failed = face.sectionView({
 		status: undefined,
-		form: { current: "", next: "", confirm: "" },
+		form: { current: "", next: "", confirm: "" }, changeError: undefined,
+		resetPassword: "", resetError: undefined,
 		notice: { kind: "error", text: "当前密码不正确" },
 		busy: false,
 		handlers: {}
@@ -254,7 +271,8 @@ test("the section view reports an empty lockout list as none", async () => {
 				unlockRemoteSettings: false
 			}
 		},
-		form: { current: "", next: "", confirm: "" },
+		form: { current: "", next: "", confirm: "" }, changeError: undefined,
+		resetPassword: "", resetError: undefined,
 		notice: undefined,
 		busy: false,
 		handlers: {}
