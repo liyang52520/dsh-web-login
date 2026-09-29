@@ -62,7 +62,15 @@ async function loadClientHalf() {
 		if (specifier === "@deepseek-ai/dsh-client-ui-primitives") {
 			/* Stand-in for the shell-provided design system. */
 			return {
-				Button: (props) => React.createElement("button", { "data-primitive": props.variant }, props.children)
+				Button: (props) => React.createElement("button", { "data-primitive": props.variant }, props.children),
+				/* The real Modal renders its header from these props. */
+				Modal: (props) => (props.open === true
+					? React.createElement("div", { "data-primitive": "modal", "data-title": props.title }, [
+						React.createElement("div", { key: "t" }, props.title),
+						React.createElement("div", { key: "d" }, props.description),
+						props.children
+					])
+					: null)
 			};
 		}
 		throw new Error(`unexpected require(${JSON.stringify(specifier)})`);
@@ -70,13 +78,35 @@ async function loadClientHalf() {
 	return { spec: captured, face };
 }
 
-/** Walk a React element tree and collect its text content. */
+/**
+ * Apply the function components in an element tree, so assertions describe what
+ * would actually render. The stand-ins are pure, so calling them is safe; a
+ * closed modal disappears here exactly as it would in the browser.
+ */
+function render(node) {
+	if (node === null || node === undefined || typeof node === "boolean") return node;
+	if (typeof node === "string" || typeof node === "number") return node;
+	if (Array.isArray(node)) return node.map(render);
+	if (typeof node.type === "function") return render(node.type(node.props));
+	return { ...node, props: { ...node.props, children: render(node.props?.children) } };
+}
+
+/** Collect the text content of a rendered tree. */
 function textOf(node) {
-	if (node === null || node === undefined || node === false || node === true) return "";
+	if (node === null || node === undefined || typeof node === "boolean") return "";
 	if (typeof node === "string" || typeof node === "number") return String(node);
 	if (Array.isArray(node)) return node.map(textOf).join(" ");
 	if (typeof node === "object" && node.props !== undefined) return textOf(node.props.children);
 	return "";
+}
+
+/** Collect every element whose type is `tag` and return their props. */
+function findAll(node, tag, out = []) {
+	if (node === null || typeof node !== "object") return out;
+	if (Array.isArray(node)) { for (const child of node) findAll(child, tag, out); return out; }
+	if (node.type === tag) out.push(node.props);
+	if (node.props?.children !== undefined) findAll(node.props.children, tag, out);
+	return out;
 }
 
 test("the client bundle registers under the package id and exports a plugin face", async () => {
@@ -128,12 +158,18 @@ test("the section view renders the status table and both action groups", async (
 				unlockRemoteSettings: true
 			}
 		},
+		changeOpen: true,
+		resetOpen: true,
 		form: { current: "", next: "", confirm: "" },
+		resetPassword: "",
 		notice: undefined,
 		busy: false,
-		handlers: { onField() {}, onPassword() {}, onLogout() {}, onReset() {} }
+		handlers: {
+			onField() {}, onPassword() {}, onLogout() {}, onReset() {},
+			onOpenChange() {}, onCancelChange() {}, onOpenReset() {}, onCancelReset() {}, onResetField() {}
+		}
 	});
-	const text = textOf(element);
+	const text = textOf(render(element));
 
 	assert.match(text, /密码保护/);
 	assert.match(text, /已启用/);
@@ -147,16 +183,38 @@ test("the section view renders the status table and both action groups", async (
 	 * elements. Nothing renders the tree here, so a Button usage shows up as an
 	 * element whose type is the component and whose props carry the variant.
 	 */
-	const buttons = [];
-	(function walk(node) {
-		if (node === null || typeof node !== "object") return;
-		if (Array.isArray(node)) return node.forEach(walk);
-		if (typeof node.type === "function" && typeof node.props?.variant === "string") buttons.push(node.props.variant);
-		if (node.props?.children !== undefined) walk(node.props.children);
-	})(element);
-	assert.deepEqual(buttons, ["primary", "outline", "outline"], "save plus the two session actions");
+	const buttons = findAll(render(element), "button").map((props) => props["data-primitive"]);
+	assert.deepEqual(
+		buttons,
+		["outline", "outline", "outline", "outline", "primary", "outline", "primary"],
+		"three actions, then cancel/save, then cancel/reset in the dialog"
+	);
+
+	/* The change form must be revealed by a button, not always on the page. */
+	const collapsed = face.sectionView({
+		status: undefined, changeOpen: false, resetOpen: false,
+		form: { current: "", next: "", confirm: "" }, resetPassword: "", notice: undefined, busy: false,
+		handlers: {}
+	});
+	const collapsedText = textOf(render(collapsed));
+	assert.equal(collapsedText.includes("确认新密码"), false, "the form must stay collapsed until asked for");
+	assert.equal(collapsedText.includes("当前密码"), false, "the reset dialog must stay closed");
+	assert.equal(collapsedText.includes("重置密码"), true, "the trigger button is still offered");
 	assert.match(text, /退出登录/);
 	assert.match(text, /重置密码/);
+});
+
+test("reset asks for confirmation through the native modal, not window.prompt", async () => {
+	const { face } = await loadClientHalf();
+	const element = face.sectionView({
+		status: undefined, changeOpen: false, resetOpen: true,
+		form: { current: "", next: "", confirm: "" }, resetPassword: "", notice: undefined, busy: false,
+		handlers: {}
+	});
+	const modals = findAll(render(element), "div").filter((props) => props["data-primitive"] === "modal");
+	assert.equal(modals.length, 1, "the dialog must go through the design system Modal");
+	assert.equal(modals[0]["data-title"], "重置密码");
+	assert.match(textOf(render(element)), /请输入当前密码以确认/, "the consequence is spelled out in the dialog");
 });
 
 test("the section view renders before the status arrives, and shows notices", async () => {
@@ -168,7 +226,7 @@ test("the section view renders before the status arrives, and shows notices", as
 		busy: false,
 		handlers: {}
 	});
-	assert.match(textOf(loading), /正在读取状态/);
+	assert.match(textOf(render(loading)), /正在读取状态/);
 
 	const failed = face.sectionView({
 		status: undefined,
@@ -177,7 +235,7 @@ test("the section view renders before the status arrives, and shows notices", as
 		busy: false,
 		handlers: {}
 	});
-	assert.match(textOf(failed), /当前密码不正确/);
+	assert.match(textOf(render(failed)), /当前密码不正确/);
 });
 
 test("the section view reports an empty lockout list as none", async () => {
@@ -201,6 +259,6 @@ test("the section view reports an empty lockout list as none", async () => {
 		busy: false,
 		handlers: {}
 	});
-	assert.match(textOf(element), /无/);
-	assert.match(textOf(element), /远程浏览器可用设置 否/);
+	assert.match(textOf(render(element)), /无/);
+	assert.match(textOf(render(element)), /远程浏览器可用设置 否/);
 });

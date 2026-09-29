@@ -28,10 +28,14 @@ window.__ModuleLoader__.load({
 		 * losing the whole page.
 		 */
 		let Button;
+		let Modal;
 		try {
-			Button = require("@deepseek-ai/dsh-client-ui-primitives").Button;
+			const primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+			Button = primitives.Button;
+			Modal = primitives.Modal;
 		} catch {
 			Button = undefined;
+			Modal = undefined;
 		}
 
 		/**
@@ -115,38 +119,82 @@ window.__ModuleLoader__.load({
 
 		/** A pill button. The real primitive is used when it resolves. */
 		function pill(variant, props) {
-			const base = {
-				height: 32,
-				padding: "0 16px",
-				fontFamily: FONT,
-				fontSize: 14,
-				fontWeight: 500,
-				borderRadius: 999,
-				cursor: props.disabled === true ? "default" : "pointer",
-				opacity: props.disabled === true ? 0.5 : 1
-			};
 			if (Button !== undefined) return h(Button, { ...props, variant });
 			return h("button", {
 				...props,
 				style: {
-					...base,
+					height: 32,
+					padding: "0 16px",
+					fontFamily: FONT,
+					fontSize: 14,
+					fontWeight: 500,
+					borderRadius: 999,
+					cursor: props.disabled === true ? "default" : "pointer",
+					opacity: props.disabled === true ? 0.5 : 1,
+					...props.style,
 					border: variant === "primary" ? "0" : `1px solid ${T.inputBorder}`,
 					background: variant === "primary" ? "var(--dsw-alias-brand-primary, #0f1115)" : "transparent",
-					color: variant === "primary" ? "var(--dsw-alias-label-primary-foreground, #fff)" : T.labelPrimary
+					color: props.style?.color ?? (variant === "primary" ? "var(--dsw-alias-label-primary-foreground, #fff)" : T.labelPrimary)
 				}
 			});
+		}
+
+		/** One labelled input, as inside a native setup card. */
+		function textField(id, label, props, extra) {
+			return h("div", { key: id, style: extra?.first === true ? undefined : { marginTop: 14 } }, [
+				h("label", { key: "l", htmlFor: id, style: fieldLabel }, label),
+				h("input", { key: "i", id, type: "password", style: field, ...props })
+			]);
+		}
+
+		/**
+		 * Modal chrome. The native Modal renders the header from `title` and
+		 * `description` and portals itself, so the caller only supplies the body.
+		 * Falls back to a plain overlay when the primitive is unavailable.
+		 */
+		function dialog(props, children) {
+			if (Modal !== undefined) {
+				return h(Modal, {
+					open: props.open,
+					onClose: props.onClose,
+					title: props.title,
+					description: props.description,
+					closeLabel: "取消"
+				}, children);
+			}
+			if (props.open !== true) return null;
+			return h("div", {
+				style: {
+					position: "fixed", inset: 0, zIndex: 80, display: "grid", placeItems: "center",
+					background: "var(--dsw-alias-bg-mask-1, rgb(0 0 0 / 24%))"
+				},
+				onClick: (event) => { if (event.target === event.currentTarget) props.onClose(); }
+			}, h("div", {
+				style: {
+					width: "100%", maxWidth: 420, padding: 24, borderRadius: 20, background: T.inputBg,
+					boxShadow: "0 12px 40px rgb(0 0 0 / 18%)", fontFamily: FONT
+				}
+			}, [
+				h("div", { key: "t", style: heading }, props.title),
+				h("p", { key: "d", style: { margin: "0 0 4px", ...TEXT, color: T.labelSecondary } }, props.description),
+				...children
+			]));
 		}
 
 		/**
 		 * Pure view for the settings page.
 		 * @param props.status - last `/__api/status` payload, or undefined while loading.
-		 * @param props.form - current password-change draft `{ current, next, confirm }`.
+		 * @param props.changeOpen - whether the change-password form is expanded.
+		 * @param props.resetOpen - whether the reset dialog is open.
+		 * @param props.form - change-password draft `{ current, next, confirm }`.
+		 * @param props.resetPassword - current-password draft for the reset dialog.
 		 * @param props.notice - `{ kind: "ok" | "error", text }` to show, or undefined.
 		 * @param props.busy - whether a request is in flight.
-		 * @param props.handlers - `{ onField, onPassword, onLogout, onReset }`.
+		 * @param props.handlers - callbacks; see {@link WebLoginSection}.
 		 * @returns the section element tree.
 		 */
-		function sectionView({ status, form, notice, busy, handlers }) {
+		function sectionView({ status, changeOpen, resetOpen, form, resetPassword, notice, busy, handlers }) {
+			const change = form ?? { current: "", next: "", confirm: "" };
 			const children = [
 				h("h2", { key: "h", style: heading }, "登录门禁"),
 				h("p", { key: "lede", style: { margin: "0 0 24px", ...TEXT, color: T.labelSecondary } },
@@ -159,10 +207,7 @@ window.__ModuleLoader__.load({
 						key: "notice",
 						role: "status",
 						style: {
-							margin: "0 0 16px",
-							padding: "8px 12px",
-							...TEXT,
-							borderRadius: 8,
+							margin: "0 0 16px", padding: "8px 12px", ...TEXT, borderRadius: 8,
 							color: notice.kind === "error" ? T.error : T.labelPrimary,
 							background: notice.kind === "error" ? "transparent" : T.hover,
 							border: `1px solid ${notice.kind === "error" ? T.error : "transparent"}`
@@ -195,48 +240,73 @@ window.__ModuleLoader__.load({
 			}
 
 			children.push(
-				h("div", { key: "pw-group" }, [
-					h("div", { key: "pw-label", style: groupLabel }, "修改密码"),
-					h("form", {
-						key: "pw",
-						style: card,
-						onSubmit: (event) => {
-							event.preventDefault();
-							handlers.onPassword();
-						}
-					}, [
-						h("label", { key: "l1", htmlFor: "wl-current", style: fieldLabel }, "当前密码"),
-						h("input", {
-							key: "current", id: "wl-current", type: "password", value: form.current,
-							autoComplete: "current-password", style: field,
-							onChange: (event) => handlers.onField("current", event.target.value)
-						}),
-						h("label", { key: "l2", htmlFor: "wl-next", style: { ...fieldLabel, marginTop: 14 } }, "新密码"),
-						h("input", {
-							key: "next", id: "wl-next", type: "password", value: form.next,
-							autoComplete: "new-password", style: field,
-							onChange: (event) => handlers.onField("next", event.target.value)
-						}),
-						h("label", { key: "l3", htmlFor: "wl-confirm", style: { ...fieldLabel, marginTop: 14 } }, "确认新密码"),
-						h("input", {
-							key: "confirm", id: "wl-confirm", type: "password", value: form.confirm,
-							autoComplete: "new-password", style: field,
-							onChange: (event) => handlers.onField("confirm", event.target.value)
-						}),
-						h("div", { key: "save-row", style: { display: "flex", justifyContent: "flex-end", marginTop: 16 } },
-							pill("primary", { type: "submit", disabled: busy, children: busy ? "提交中…" : "保存" }))
+				h("div", { key: "actions-group" }, [
+					h("div", { key: "label", style: groupLabel }, "密码与会话"),
+					h("p", { key: "note", style: { margin: "0 0 14px", fontSize: 13, lineHeight: "20px", color: T.labelTertiary } },
+						"「退出登录」只清掉这台设备的登录态；「重置密码」会删除已保存的密码，所有设备都要重新设置。"),
+					h("div", { key: "buttons", style: { display: "flex", gap: 8, flexWrap: "wrap" } }, [
+						pill("outline", { key: "change", type: "button", disabled: busy, onClick: () => handlers.onOpenChange(), children: "修改密码" }),
+						pill("outline", { key: "logout", type: "button", disabled: busy, onClick: () => handlers.onLogout(), children: "退出登录" }),
+						pill("outline", {
+							key: "reset", type: "button", disabled: busy,
+							style: { color: T.error }, onClick: () => handlers.onOpenReset(), children: "重置密码"
+						})
 					])
 				])
 			);
 
+			/*
+			 * Change password expands in place, the way the model settings page
+			 * reveals its custom-provider form, rather than occupying the page
+			 * permanently or hiding a routine action behind a dialog.
+			 */
+			if (changeOpen === true) {
+				children.push(
+					h("form", {
+						key: "change-form",
+						style: { ...card, marginTop: 16, marginBottom: 0 },
+						onSubmit: (event) => { event.preventDefault(); handlers.onPassword(); }
+					}, [
+						h("div", { key: "title", style: { ...groupLabel, marginBottom: 10 } }, "修改密码"),
+						textField("wl-current", "当前密码", {
+							value: change.current, autoComplete: "current-password", autoFocus: true,
+							onChange: (event) => handlers.onField("current", event.target.value)
+						}, { first: true }),
+						textField("wl-next", "新密码", {
+							value: change.next, autoComplete: "new-password",
+							onChange: (event) => handlers.onField("next", event.target.value)
+						}),
+						textField("wl-confirm", "确认新密码", {
+							value: change.confirm, autoComplete: "new-password",
+							onChange: (event) => handlers.onField("confirm", event.target.value)
+						}),
+						h("div", { key: "row", style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 } }, [
+							pill("outline", { key: "cancel", type: "button", onClick: () => handlers.onCancelChange(), children: "取消" }),
+							pill("primary", { key: "save", type: "submit", disabled: busy, children: busy ? "保存中…" : "保存" })
+						])
+					])
+				);
+			}
+
+			/* Reset needs the current password, so it asks for it in the dialog. */
 			children.push(
-				h("div", { key: "session-group" }, [
-					h("div", { key: "session-label", style: groupLabel }, "会话"),
-					h("p", { key: "session-note", style: { margin: "0 0 14px", fontSize: 13, lineHeight: "20px", color: T.labelTertiary } },
-						"退出登录只清掉这台设备的登录态。重置密码会删除已保存的密码，所有设备都要重新设置。"),
-					h("div", { key: "actions", style: { display: "flex", gap: 8, flexWrap: "wrap" } }, [
-						pill("outline", { key: "logout", type: "button", disabled: busy, onClick: () => handlers.onLogout(), children: "退出登录" }),
-						pill("outline", { key: "reset", type: "button", disabled: busy, onClick: () => handlers.onReset(), style: { color: T.error }, children: "重置密码" })
+				dialog({
+					open: resetOpen === true,
+					onClose: () => handlers.onCancelReset(),
+					title: "重置密码",
+					description: "删除已保存的密码后，所有设备（包括这一台）都要重新设置。请输入当前密码以确认。"
+				}, [
+					textField("wl-reset", "当前密码", {
+						value: resetPassword ?? "", autoComplete: "current-password", autoFocus: true,
+						onChange: (event) => handlers.onResetField(event.target.value)
+					}, { first: true }),
+					h("div", { key: "row", style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 24 } }, [
+						pill("outline", { key: "cancel", type: "button", onClick: () => handlers.onCancelReset(), children: "取消" }),
+						pill("primary", {
+							key: "confirm", type: "button", disabled: busy,
+							style: { background: T.error, color: "#fff" },
+							onClick: () => handlers.onReset(), children: busy ? "重置中…" : "重置密码"
+						})
 					])
 				])
 			);
@@ -264,6 +334,9 @@ window.__ModuleLoader__.load({
 		function WebLoginSection() {
 			const [status, setStatus] = React.useState(undefined);
 			const [form, setForm] = React.useState({ current: "", next: "", confirm: "" });
+			const [resetPassword, setResetPassword] = React.useState("");
+			const [changeOpen, setChangeOpen] = React.useState(false);
+			const [resetOpen, setResetOpen] = React.useState(false);
 			const [notice, setNotice] = React.useState(undefined);
 			const [busy, setBusy] = React.useState(false);
 
@@ -281,6 +354,26 @@ window.__ModuleLoader__.load({
 				onField(key, value) {
 					setForm((current) => ({ ...current, [key]: value }));
 				},
+				onResetField(value) {
+					setResetPassword(value);
+				},
+				onOpenChange() {
+					setNotice(undefined);
+					setChangeOpen(true);
+				},
+				onCancelChange() {
+					setForm({ current: "", next: "", confirm: "" });
+					setChangeOpen(false);
+				},
+				onOpenReset() {
+					setNotice(undefined);
+					setResetPassword("");
+					setResetOpen(true);
+				},
+				onCancelReset() {
+					setResetPassword("");
+					setResetOpen(false);
+				},
 				async onPassword() {
 					if (form.next !== form.confirm) {
 						setNotice({ kind: "error", text: "两次输入的新密码不一致" });
@@ -294,6 +387,7 @@ window.__ModuleLoader__.load({
 					setBusy(false);
 					if (result.ok) {
 						setForm({ current: "", next: "", confirm: "" });
+						setChangeOpen(false);
 						setNotice({ kind: "ok", text: "密码已更新。其它设备上的登录态已失效。" });
 						void refresh();
 					} else {
@@ -307,17 +401,22 @@ window.__ModuleLoader__.load({
 					window.location.reload();
 				},
 				async onReset() {
-					const current = window.prompt("重置会删除已保存的密码，所有设备都需要重新设置。请输入当前密码以确认：");
-					if (current === null) return;
 					setBusy(true);
-					const result = await callApi("/__api/reset", { method: "POST", body: JSON.stringify({ current }) });
+					const result = await callApi("/__api/reset", {
+						method: "POST",
+						body: JSON.stringify({ current: resetPassword })
+					});
 					setBusy(false);
-					if (result.ok) window.location.reload();
-					else setNotice({ kind: "error", text: result.body.error ?? "重置失败" });
+					if (result.ok) {
+						window.location.reload();
+						return;
+					}
+					setResetOpen(false);
+					setNotice({ kind: "error", text: result.body.error ?? "重置失败" });
 				}
 			};
 
-			return sectionView({ status, form, notice, busy, handlers });
+			return sectionView({ status, changeOpen, resetOpen, form, resetPassword, notice, busy, handlers });
 		}
 
 		/** Required service: the UI slot registry. */
