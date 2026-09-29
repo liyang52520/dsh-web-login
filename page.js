@@ -150,3 +150,36 @@ export function messagePage({ title, heading, body, detail }) {
 <p class="sub">${escape(body)}</p>
 ${detail_markup}`);
 }
+
+/**
+ * Change-password form, shown only to a caller that already holds a valid gate
+ * cookie, so it re-checks the current password instead of trusting the cookie.
+ */
+export function accountPage({ title, error, minLength }) {
+  const error_markup = error === undefined ? "" : `<div class="err" role="alert">${escape(error)}</div>`;
+  return layout(`${title} · 改密码`, `<h1>${escape(title)}</h1>
+<p class="sub">修改访问密码</p>
+${error_markup}
+<form method="post" action="/__account" autocomplete="off">
+  <label for="current">当前密码</label>
+  <input id="current" name="current" type="password" required autofocus
+         autocomplete="current-password" spellcheck="false">
+  <label for="password">新密码</label>
+  <input id="password" name="password" type="password" required
+         minlength="${escape(minLength)}" autocomplete="new-password" spellcheck="false">
+  <label for="confirm">确认新密码</label>
+  <input id="confirm" name="confirm" type="password" required
+         minlength="${escape(minLength)}" autocomplete="new-password" spellcheck="false">
+  <button type="submit">保存</button>
+</form>
+<p class="note">至少 ${escape(minLength)} 位。改完会轮换会话密钥，其它设备上的登录态立即失效，当前这台保持登录。</p>`);
+}
+
+/** Diagnostic page for a request Harness's Host/Origin fence refused. */
+export function fencePage({ title, host, hint }) {
+  return layout(`${title} · 请求被拒`, `<h1>请求被 Harness 拒绝</h1>
+<p class="sub">Host 或 Origin 不在信任范围内，所有接口都会失败。</p>
+<div class="err" role="alert">Harness 看到的 Host: <strong>${escape(host)}</strong></div>
+<p class="note">如果经反向代理或公网 IP 访问，需要两处配合：</p>
+<pre class="hint" style="white-space:pre-wrap">${escape(hint)}</pre>`);
+}

@@ -1,0 +1,50 @@
+name: publish
+
+# Publishes to npm when a version tag is pushed.
+#
+# One-time setup, by the repository owner:
+#   1. Create an npm "Automation" access token (npmjs.com → Access Tokens),
+#      which is not subject to 2FA prompts in CI.
+#   2. Add it to this repository as an Actions secret named NPM_TOKEN
+#      (Settings → Secrets and variables → Actions → New repository secret).
+#   3. Tag a release:  git tag v1.2.0 && git push origin v1.2.0
+#
+# The tag must match the version in package.json, so a stale tag cannot publish
+# the wrong code over an existing version.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Tag must match package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      - name: Test
+        run: npm test
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

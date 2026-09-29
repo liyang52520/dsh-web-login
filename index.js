@@ -27,7 +27,7 @@ import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { loginPage, messagePage, setupPage } from "./page.js";
+import { accountPage, fencePage, loginPage, messagePage, setupPage } from "./page.js";
 
 /** Stable Cordis plugin name; also the credential-record scope. */
 export const name = "dsh-web-login";
@@ -50,6 +50,10 @@ const HARNESS_COOKIE_PREFIX = "dsh-auth-";
 const LOGIN_PATH = "/__login";
 /** Route clearing the gate cookie. */
 const LOGOUT_PATH = "/__logout";
+/** Route owning the change-password form (reachable only while already gated). */
+const ACCOUNT_PATH = "/__account";
+/** Prefix every audit line shares, so operators can grep it out of journald. */
+const AUDIT_PREFIX = "dsh web-login: audit";
 /** Largest accepted form body. */
 const MAX_BODY_BYTES = 8192;
 /** scrypt cost parameters for new passwords. */
@@ -341,17 +345,23 @@ class FailureTracker {
 		return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
 	}
 
-	/** Record one failure and return the resulting wait in seconds. */
+	/**
+	 * Record one failure.
+	 * @returns the running failure count, the resulting wait in seconds, and
+	 *   whether this failure is the one that opened a new lockout.
+	 */
 	fail(ip) {
 		const now = Date.now();
 		const entry = this.entries.get(ip) ?? { failures: 0, blockedUntil: 0 };
+		const wasBlocked = entry.blockedUntil > now;
 		entry.failures += 1;
+		const locking = entry.failures >= this.maxFailures && !wasBlocked;
 		if (entry.failures >= this.maxFailures) entry.blockedUntil = now + this.lockoutSeconds * 1000;
 		this.entries.set(ip, entry);
 		if (this.entries.size > 1024) {
 			for (const [key, value] of this.entries) if (value.blockedUntil <= now && value.failures < this.maxFailures) this.entries.delete(key);
 		}
-		return this.retryAfter(ip);
+		return { failures: entry.failures, retryAfter: this.retryAfter(ip), locking };
 	}
 
 	/** Clear one address after a successful check. */
@@ -528,6 +538,34 @@ export function apply(ctx, config) {
 	const failures = new FailureTracker(resolved.maxFailures, resolved.lockoutSeconds);
 	const setupToken = base64url(randomBytes(SETUP_TOKEN_BYTES));
 	const renderIndex = createIndexRenderer(ctx, resolved);
+	/** Hosts already reported as fence-rejected, so the warning is printed once each. */
+	const reportedUntrustedHosts = new Set();
+
+	/**
+	 * One audit line on stdout, which systemd forwards to the journal. Field
+	 * values never include a submitted password.
+	 * @param event - stable event name, for grepping.
+	 * @param fields - ordered key/value detail.
+	 */
+	function audit(event, fields) {
+		const parts = [AUDIT_PREFIX, event];
+		for (const [key, value] of Object.entries(fields)) parts.push(`${key}=${value}`);
+		process.stdout.write(`${parts.join(" ")}\n`);
+	}
+
+	/** The exact startup flags this deployment needs for one untrusted host. */
+	function trustedHostHint(host) {
+		return [
+			`1) 给 dsh 声明这个主机（systemd 的 ExecStart 里加参数）：`,
+			`     --trusted-host ${host}`,
+			``,
+			`2) 让反向代理透传真实 Host 与 Origin：`,
+			`     proxy_set_header Host   $http_host;`,
+			`     proxy_set_header Origin $http_origin;`,
+			``,
+			`改完重启 dsh 与 nginx。`
+		].join("\n");
+	}
 
 	let state;
 	let loadError;
@@ -615,17 +653,20 @@ export function apply(ctx, config) {
 			return;
 		}
 		if (rejection === 403) {
-			sendHtml(
-				req,
-				res,
-				403,
-				messagePage({
-					title: resolved.title,
-					heading: "请求被 Harness 拒绝",
-					body: "Host 或 Origin 不在信任范围内。",
-					detail: "请直接用地址栏里的域名或 IP 访问，并确认启动参数 --trusted-host 与之一致。"
-				})
-			);
+			/*
+			 * Harness refused this Host. That is the deployment's most common
+			 * footgun (a proxy not declaring its external authority), and the
+			 * browser sees only a generic error, so say what to change and say it
+			 * once per offending host.
+			 */
+			if (!reportedUntrustedHosts.has(authority)) {
+				reportedUntrustedHosts.add(authority);
+				audit("fence-rejected", { host: authority, result: 403 });
+				for (const line of trustedHostHint(authority).split("\n")) {
+					process.stdout.write(`dsh web-login: ${line}\n`);
+				}
+			}
+			sendHtml(req, res, 403, fencePage({ title: resolved.title, host: authority, hint: trustedHostHint(authority) }));
 			return;
 		}
 		if (renderIndex === undefined) {
@@ -702,8 +743,15 @@ export function apply(ctx, config) {
 		if (state === undefined) {
 			const loopback = resolved.allowLoopbackSetup && isLoopbackRequest(req, resolved);
 			if (!loopback && !tokenMatches(form.get("setup"), setupToken)) {
-				const wait = failures.fail(address);
-				servePrompt(req, res, wait > 0 ? 429 : 403, "初始化口令不正确。");
+				const outcome = failures.fail(address);
+				audit("setup-token-failed", {
+					ip: address,
+					host: authority,
+					failures: outcome.failures,
+					lockout: outcome.retryAfter > 0 ? `${String(outcome.retryAfter)}s` : "none"
+				});
+				if (outcome.locking) audit("lockout", { ip: address, seconds: resolved.lockoutSeconds });
+				servePrompt(req, res, outcome.retryAfter > 0 ? 429 : 403, "初始化口令不正确。");
 				return;
 			}
 			const password = form.get("password") ?? "";
@@ -720,6 +768,7 @@ export function apply(ctx, config) {
 			await ctx.credentials.modifyRecord(RECORD_KEY, async () => ({ kind: "grant", payload: created }));
 			state = created;
 			failures.succeed(address);
+			audit("password-set", { ip: address, host: authority });
 			process.stdout.write("dsh web-login: 密码已设置，初始化口令即刻失效\n");
 			grant(req, res, authority, true);
 			return;
@@ -727,12 +776,119 @@ export function apply(ctx, config) {
 
 		const password = form.get("password") ?? "";
 		if (!(await verifyPassword(password, state))) {
-			const wait = failures.fail(address);
-			servePrompt(req, res, wait > 0 ? 429 : 401, wait > 0 ? `尝试过于频繁，请在 ${String(wait)} 秒后重试。` : "密码不正确。");
+			const outcome = failures.fail(address);
+			audit("login-failed", {
+				ip: address,
+				host: authority,
+				failures: outcome.failures,
+				lockout: outcome.retryAfter > 0 ? `${String(outcome.retryAfter)}s` : "none"
+			});
+			if (outcome.locking) audit("lockout", { ip: address, seconds: resolved.lockoutSeconds });
+			servePrompt(
+				req,
+				res,
+				outcome.retryAfter > 0 ? 429 : 401,
+				outcome.retryAfter > 0 ? `尝试过于频繁，请在 ${String(outcome.retryAfter)} 秒后重试。` : "密码不正确。"
+			);
 			return;
 		}
+		const remember = form.get("remember") === "1";
 		failures.succeed(address);
-		grant(req, res, authority, form.get("remember") === "1");
+		audit("login-ok", { ip: address, host: authority, remember: remember ? "1" : "0" });
+		grant(req, res, authority, remember);
+	}
+
+	/**
+	 * Change the password from a browser that already passed the gate. The
+	 * current password is re-checked, then the record is replaced with a new
+	 * hash AND a new cookie signing key: every other device's gate cookie stops
+	 * verifying, while this one is re-issued immediately.
+	 */
+	async function handleAccount(req, res) {
+		const authority = requestAuthority(req.headers);
+		if (authority === undefined) {
+			sendText(req, res, 400, "bad request");
+			return;
+		}
+		await stateReady;
+		if (loadError !== undefined) {
+			sendText(req, res, 503, `login gate unavailable: ${loadError.message}`);
+			return;
+		}
+		const gated =
+			state !== undefined && decodeCookie(cookieValue(req.headers.cookie, COOKIE_NAME), state.sessionSecret, authority) !== undefined;
+		if (!gated) {
+			redirect(res, "/");
+			return;
+		}
+		if (req.method === "GET" || req.method === "HEAD") {
+			sendHtml(req, res, 200, accountPage({ title: resolved.title, minLength: resolved.passwordMinLength }));
+			return;
+		}
+		if (req.method !== "POST") {
+			sendText(req, res, 405, "method not allowed", { allow: "GET, HEAD, POST" });
+			return;
+		}
+		const address = clientAddress(req, resolved);
+		const waiting = failures.retryAfter(address);
+		if (waiting > 0) {
+			sendHtml(
+				req,
+				res,
+				429,
+				messagePage({ title: resolved.title, heading: "尝试过于频繁", body: `请在 ${String(waiting)} 秒后重试。` }),
+				{ "retry-after": String(waiting) }
+			);
+			return;
+		}
+		const form = await readForm(req);
+		if (form === undefined) {
+			sendText(req, res, 400, "bad request");
+			return;
+		}
+		const current = form.get("current") ?? "";
+		if (!(await verifyPassword(current, state))) {
+			const outcome = failures.fail(address);
+			audit("password-change-failed", {
+				ip: address,
+				failures: outcome.failures,
+				lockout: outcome.retryAfter > 0 ? `${String(outcome.retryAfter)}s` : "none"
+			});
+			if (outcome.locking) audit("lockout", { ip: address, seconds: resolved.lockoutSeconds });
+			sendHtml(
+				req,
+				res,
+				outcome.retryAfter > 0 ? 429 : 401,
+				accountPage({
+					title: resolved.title,
+					minLength: resolved.passwordMinLength,
+					error: outcome.retryAfter > 0 ? `尝试过于频繁，请在 ${String(outcome.retryAfter)} 秒后重试。` : "当前密码不正确。"
+				})
+			);
+			return;
+		}
+		const next = form.get("password") ?? "";
+		const confirm = form.get("confirm") ?? "";
+		if (next.length < resolved.passwordMinLength) {
+			sendHtml(
+				req,
+				res,
+				400,
+				accountPage({ title: resolved.title, minLength: resolved.passwordMinLength, error: `新密码至少需要 ${String(resolved.passwordMinLength)} 位。` })
+			);
+			return;
+		}
+		if (next !== confirm) {
+			sendHtml(req, res, 400, accountPage({ title: resolved.title, minLength: resolved.passwordMinLength, error: "两次输入的新密码不一致。" }));
+			return;
+		}
+		const rotated = await createState(next);
+		await ctx.credentials.modifyRecord(RECORD_KEY, async () => ({ kind: "grant", payload: rotated }));
+		state = rotated;
+		failures.succeed(address);
+		audit("password-changed", { ip: address, host: authority, sessions: "rotated" });
+		/* The signing key changed, so the caller's own cookie must be re-minted. */
+		grant(req, res, authority, true);
 	}
 
 	/** Drop both browser sessions. */
@@ -763,6 +919,10 @@ export function apply(ctx, config) {
 		() => ctx.webServer.register({ kind: "exact", path: LOGOUT_PATH, handler: handleLogout }),
 		"dsh-web-login: logout route"
 	);
+	ctx.effect(
+		() => ctx.webServer.register({ kind: "exact", path: ACCOUNT_PATH, handler: handleAccount }),
+		"dsh-web-login: account route"
+	);
 
 	/*
 	 * Remote browsers read as non-loopback, which costs them the host settings
@@ -786,6 +946,23 @@ export function apply(ctx, config) {
 			process.stdout.write(`dsh web-login: 无法读取密码记录：${loadError.message}\n`);
 			return;
 		}
+		/*
+		 * There is no request yet at startup, so the external Host is unknown
+		 * here; the one thing that can be checked now is whether a request can
+		 * ever be trusted at all. `requestRejection` is a pure predicate over
+		 * headers, so probe it with a synthetic non-loopback Host: an answer of
+		 * 403 means the fence is armed and the operator must declare whatever
+		 * host they actually use, which the first real request will then name.
+		 * Printed before the state-dependent lines because it matters most on a
+		 * brand-new deployment, where no password is set yet.
+		 */
+		if (ctx.connection.requestRejection({ headers: { host: "dsh-probe.invalid" } }) === 403) {
+			process.stdout.write(
+				`dsh web-login: 启动自检：Host/Origin 信任栅栏已启用。经反向代理或公网 IP 访问时，\n` +
+					`dsh web-login: 启动自检：需给 dsh 加 --trusted-host <你访问用的主机>，并让代理透传真实 Host/Origin，\n` +
+					`dsh web-login: 启动自检：否则登录后所有接口会 403（届时日志与页面上会指出具体该加什么）。\n`
+			);
+		}
 		if (state === undefined) {
 			process.stdout.write(
 				`dsh web-login: 尚未设置密码，首次打开页面时填写下面的初始化口令\n` +
@@ -794,7 +971,7 @@ export function apply(ctx, config) {
 			return;
 		}
 		process.stdout.write(
-			`dsh web-login: 已启用密码保护（登录页 ${LOGIN_PATH}，退出 ${LOGOUT_PATH}）\n`
+			`dsh web-login: 已启用密码保护（登录页 ${LOGIN_PATH}，退出 ${LOGOUT_PATH}，改密 ${ACCOUNT_PATH}）\n`
 		);
 		if (renderIndex === undefined) {
 			process.stdout.write(
@@ -804,3 +981,34 @@ export function apply(ctx, config) {
 		}
 	});
 }
+
+/**
+ * Pure internals exposed for the regression suite. Harness's own bundles do the
+ * same (`web-app` exports `internals`); nothing here is part of the plugin
+ * contract, so tests are the only expected consumer.
+ */
+export const internals = {
+	base64url,
+	fromBase64url,
+	sign,
+	encodeCookie,
+	decodeCookie,
+	cookieValue,
+	requestAuthority,
+	tokenMatches,
+	createState,
+	verifyPassword,
+	derive,
+	FailureTracker,
+	readConfig,
+	DEFAULTS,
+	COOKIE_NAME,
+	COOKIE_VERSION,
+	ACCOUNT_PATH,
+	LOGIN_PATH,
+	LOGOUT_PATH,
+	TRANSPORT_HOOK_SCRIPT,
+	harnessCookieName,
+	clearCookies,
+	SCRYPT_PARAMS
+};

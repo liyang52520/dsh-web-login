@@ -31,6 +31,10 @@ dsh web: http://127.0.0.1:3080/?token=0Ncme-2o6j0SI2MKI0MkRzxDc9qtAdK3fhIx0k7kwe
 - **首次运行设置密码**，用日志里打印的一次性初始化口令保护，避免公网扫描器抢先占位
 - **记住我**：勾选后默认 30 天，不勾默认 12 小时，两者都可配
 - **连续失败锁定**：同一来源失败 5 次锁定 300 秒，按真实客户端 IP 计数
+- **审计日志**：登录成功/失败、改密、锁定、栅栏拒绝都往 journal 打一行结构化记录（不含密码内容）
+- **在线改密码**：`/__account`，验当前密码后换新，并轮换会话密钥（其它设备立即失效）
+- **部署自检**：启动探测信任栅栏，Host 被拒时直接告诉你该加哪个 `--trusted-host`
+- **远程也能用设置界面**：见下方 `unlockRemoteSettings`
 - **服务重启不用重抄 token**：登录态还在时自动用新进程的 token 补签 Harness 会话
 - 密码以 scrypt 加盐哈希存储，登录态 cookie 为 HMAC-SHA256 签名并绑定 authority
 - 零依赖，只 import `node:` 内置模块，升级 Harness 不会因内部 API 变动而加载失败
@@ -173,7 +177,9 @@ globalThis.__DSH_TRANSPORT__.ownsHost = true;
 
 **退出登录**：访问 `http://<你的地址>/__logout`。它会同时清掉本插件的 cookie 和 Harness 的会话 cookie，两者都失效才算真的退出。
 
-**忘记密码 / 改密码**：停服务，编辑 `$DSH_HOME/.credentials.yaml`，删掉 `dsh-web-login/state` 那一段，重启。下次打开页面会重新进入首次设置流程。
+**改密码**：登录状态下访问 `http://<你的地址>/__account`，输当前密码 + 新密码即可。改完会**轮换会话密钥**，其它设备上的登录态立即失效，当前这台保持登录。
+
+**忘记密码**（连当前密码也不记得了）：停服务，编辑 `$DSH_HOME/.credentials.yaml`，删掉 `dsh-web-login/state` 那一段，重启。下次打开页面会重新进入首次设置流程。
 
 ```yaml
 dsh-web-login/state:        # ← 连下面几行一起删
@@ -224,8 +230,56 @@ sudo systemctl restart dsh
 | `/index.html` | 同上（仅当能定位到前端产物时注册） |
 | `/__login` | 登录 / 首次设置表单 |
 | `/__logout` | 清理登录态 |
+| `/__account` | 改密码（仅在已登录时可达，否则跳回 `/`） |
+
+## 审计日志
+
+每次与凭据相关的事件都会往 stdout 打一行（systemd 转发进 journal），前缀固定为 `dsh web-login: audit`，便于 grep。**任何一行都不会包含提交的密码内容。**
+
+| 事件 | 字段 | 何时 |
+|---|---|---|
+| `password-set` | `ip` `host` | 首次设置密码成功 |
+| `login-ok` | `ip` `host` `remember` | 登录成功 |
+| `login-failed` | `ip` `host` `failures` `lockout` | 密码错误 |
+| `password-change-failed` | `ip` `failures` `lockout` | 改密时当前密码错误 |
+| `password-changed` | `ip` `host` `sessions` | 改密成功（`sessions=rotated`） |
+| `setup-token-failed` | `ip` `host` `failures` `lockout` | 首次设置时初始化口令错误 |
+| `lockout` | `ip` `seconds` | 刚触发锁定（每个锁定周期只打一次） |
+| `fence-rejected` | `host` `result` | Harness 的 Host/Origin 栅栏拒绝了请求（每个 Host 只打一次） |
+
+```bash
+# 看最近的安全事件
+journalctl -u dsh --no-pager | grep 'dsh web-login: audit' | tail -20
+
+# 只看失败与锁定
+journalctl -u dsh --no-pager | grep -E 'audit (login-failed|lockout|fence-rejected)'
+```
+
+例：
+
+```
+dsh web-login: audit login-ok ip=203.0.113.9 host=harness.example remember=1
+dsh web-login: audit login-failed ip=198.51.100.7 host=harness.example failures=3 lockout=none
+dsh web-login: audit lockout ip=198.51.100.7 seconds=300
+dsh web-login: audit password-changed ip=203.0.113.9 host=harness.example sessions=rotated
+```
 
 ## 排障
+
+**登录成功了，但所有接口 403。**
+
+这是最常见的部署问题：Harness 的 Host/Origin 信任栅栏不认识你访问用的主机。本插件会在**首次**遇到时做两件事：打一行 `audit fence-rejected`，紧接着打印**该加什么参数**；同时给浏览器一个写明「Harness 看到的 Host 是什么」的诊断页，而不是干巴巴一句 403。
+
+```
+dsh web-login: audit fence-rejected host=harness.example result=403
+dsh web-login: 1) 给 dsh 声明这个主机（systemd 的 ExecStart 里加参数）：
+dsh web-login:      --trusted-host harness.example
+dsh web-login: 2) 让反向代理透传真实 Host 与 Origin：
+dsh web-login:      proxy_set_header Host   $http_host;
+dsh web-login:      proxy_set_header Origin $http_origin;
+```
+
+插件启动时也会做一次自检（用合成 Host 探测栅栏是否启用），提前提示这一点。
 
 **日志出现「未能定位前端 index.html，`/index.html` 未纳入密码保护」。**
 
@@ -266,10 +320,21 @@ ssh -N -L 3080:127.0.0.1:3080 user@你的服务器
 
 - 密码用 scrypt（N=16384, r=8, p=1）加盐哈希，存在 `$DSH_HOME/.credentials.yaml`（0600 权限），与 Harness 自己的浏览器会话密钥放在同一个文件里。
 - 登录态 cookie 是 HMAC-SHA256 签名的，并绑定到请求的 authority。伪造或换 host 都无效。
-- 限流按来源 IP 记在**内存**里，重启即清零。它防的是单个来源的暴力破解，不防分布式慢速爆破。
+- 限流按来源 IP 记在**内存**里，重启即清零。它防的是单个来源的暴力破解，不防分布式慢速爆破。所有失败都会进审计日志，便于事后发现。
+- 改密码会轮换 cookie 签名密钥，因此**其它设备上的登录态立即失效**；当前这台会被重新签发。Harness 自己的会话 cookie 不受影响（它由 Harness 签发，插件无法吊销）。
 - `/__logout` 接受 GET，所以可以被第三方页面诱导触发（CSRF logout）。后果仅仅是登出，无其它影响。
 - 退出时会顺手让 Harness 的会话 cookie 过期。这依赖 Harness 内部的 cookie 命名规则（`dsh-auth-` + sha256(authority)）。若将来 Harness 改了命名，只是退出时清不掉它，不影响门禁本身。
 - 这个插件拥有宿主进程的全部权限。请只使用你读过的版本，不要从不明来源安装同名的包。
+
+## 测试
+
+纯逻辑部分（编码、签名 cookie、密码哈希、限流、配置校验）有回归测试，零依赖，用 Node 内置的 test runner：
+
+```bash
+npm test          # 等价于 node --test
+```
+
+HTTP 层不在测试覆盖内（需要 Harness 上下文），那部分是对着真实实例验证的。
 
 ## 文件结构
 
