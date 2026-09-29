@@ -152,6 +152,7 @@ dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 | `allowLoopbackSetup` | `false` | 允许本机来源跳过初始化口令 |
 | `indexHtml` | `""` | 手动指定前端 `index.html` 路径，留空则自动定位 |
 | `unlockRemoteSettings` | `true` | 让远程（非回环）浏览器也能用 host 侧设置，见下节 |
+| `pageTheme` | `"auto"` | 登录页配色：`auto`（跟随系统）/ `light` / `dark` |
 
 `clientIpHeader` 默认信任 `X-Real-IP`。这是成立的，因为 Harness 只监听回环地址，只有 nginx 能到达该端口，而 nginx 的 `proxy_set_header X-Real-IP $remote_addr` 会覆盖客户端伪造的值。**如果你把 Harness 直接暴露到公网（不推荐），这个头就是可伪造的，应置空。**
 
@@ -189,6 +190,36 @@ globalThis.__DSH_TRANSPORT__.ownsHost = true;
   config:
     unlockRemoteSettings: false
 ```
+
+## 外观
+
+登录页、设置密码页、改密码页和出错页的配色与排版**直接取自 Harness 自带的主题 token**，不是另配一套：
+
+| 用途 | 浅色 | 深色 | 来源 |
+|---|---|---|---|
+| 页面底色 | `#fff` | `#151517` | `--dsw-alias-bg-base` |
+| 卡片表面 | `#fff` | `#232324` | `--dsw-alias-bg-layer-1` |
+| 主按钮 / 强调 | `#0f1115` | `#f9fafb` | `--dsw-alias-brand-primary` |
+| 按钮悬停 | `#43454a` | `#ebeef2` | `--dsw-alias-button-primary-hover` |
+| 主文本 | `#0f1115` | `#f9fafb` | `--dsw-alias-label-primary` |
+| 次文本 | `#61666b` | `#cfd3d6` | `--dsw-alias-label-secondary` |
+| 三级文本 | `#81858c` | `#adb2b8` | `--dsw-alias-label-tertiary` |
+| 边框 | `rgb(0 0 0 / 4%)` | `rgb(255 255 255 / 6%)` | `--dsw-alias-border-l1` |
+| 错误 | `#ec1313` | `#f25a5a` | `--dsw-alias-state-error-primary` |
+
+字体栈、字号（12/13/14/16px）、圆角（6/8/14px）和代码字体也照搬 Harness，所以登录页看起来像 Harness 自己的一个对话框。
+
+注意 **Harness 的主色是近黑/近白的中性色，不是蓝色** —— 很多插件会把主按钮做成蓝色，那反而不像 Harness。
+
+配色默认跟随操作系统（`prefers-color-scheme`）。若你的系统是浅色但想固定深色，或者反过来：
+
+```yaml
+- id: web-login
+  config:
+    pageTheme: dark      # auto | light | dark
+```
+
+页面完全自包含：没有脚本、没有外部请求，CSP 也是按这个前提写的。
 
 ## 日常操作
 

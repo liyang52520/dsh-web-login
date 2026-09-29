@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { internals } from "../index.js";
+import { accountPage, fencePage, loginPage, messagePage, setupPage } from "../page.js";
 
 const {
 	ACCOUNT_PATH,
@@ -196,6 +197,46 @@ test("the transport hook only declares ownsHost and adds no other capability", (
 	assert.match(TRANSPORT_HOOK_SCRIPT, /__DSH_TRANSPORT__/);
 	assert.match(TRANSPORT_HOOK_SCRIPT, /ownsHost = true/);
 	assert.equal(TRANSPORT_HOOK_SCRIPT.includes("</script"), false, "must not be able to break out of its tag");
+});
+
+test("readConfig accepts only the three known page themes", () => {
+	assert.equal(readConfig(undefined).pageTheme, "auto");
+	assert.equal(readConfig({ pageTheme: "auto" }).pageTheme, "auto");
+	assert.equal(readConfig({ pageTheme: "dark" }).pageTheme, "dark");
+	assert.equal(readConfig({ pageTheme: "light" }).pageTheme, "light");
+	assert.throws(() => readConfig({ pageTheme: "blue" }), /pageTheme/);
+	assert.throws(() => readConfig({ pageTheme: true }), /pageTheme/);
+});
+
+test("the gate pages carry Harness's own palette and font stack", () => {
+	for (const html of [
+		loginPage({ title: "T" }),
+		setupPage({ title: "T", minLength: 8, needsToken: true }),
+		accountPage({ title: "T", minLength: 8 }),
+		messagePage({ title: "T", heading: "H", body: "B" }),
+		fencePage({ title: "T", host: "h", hint: "x" })
+	]) {
+		assert.match(html, /--brand: #0f1115/, "light accent must be Harness's near-black brand, not a blue");
+		assert.match(html, /--brand: #f9fafb/, "dark accent must be Harness's near-white brand");
+		assert.match(html, /-apple-system, BlinkMacSystemFont/, "font stack must match the app");
+		assert.equal(html.includes("#2f6bf3"), false, "the old ad-hoc blue must be gone");
+		assert.equal(html.includes("<script"), false, "gate pages must stay script-free");
+	}
+});
+
+test("the theme override is reflected in the document and defaults to the OS", () => {
+	/* `data-theme` also appears in the stylesheet selectors, so assert on the tag. */
+	assert.match(loginPage({ title: "T" }), /<html lang="zh-CN">/, "auto follows prefers-color-scheme");
+	assert.match(loginPage({ title: "T", theme: "auto" }), /<html lang="zh-CN">/);
+	assert.match(loginPage({ title: "T", theme: "dark" }), /<html lang="zh-CN" data-theme="dark">/);
+	assert.match(loginPage({ title: "T", theme: "light" }), /<html lang="zh-CN" data-theme="light">/);
+});
+
+test("page text is escaped", () => {
+	const html = loginPage({ title: '<img src=x onerror=alert(1)>', error: "<b>boom</b>" });
+	assert.equal(html.includes("<img src=x"), false);
+	assert.equal(html.includes("<b>boom</b>"), false);
+	assert.match(html, /&lt;img src=x/);
 });
 
 test("the change-password route is distinct from the login and the document routes", () => {

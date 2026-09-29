@@ -79,7 +79,8 @@ const DEFAULTS = {
 	clientIpHeader: "x-real-ip",
 	allowLoopbackSetup: false,
 	indexHtml: "",
-	unlockRemoteSettings: true
+	unlockRemoteSettings: true,
+	pageTheme: "auto"
 };
 
 /**
@@ -219,6 +220,15 @@ function text(raw, fallback, key) {
 	return raw;
 }
 
+/** Validate the gate page's colour scheme override. */
+function pageTheme(raw, fallback) {
+	if (raw === undefined) return fallback;
+	if (raw !== "auto" && raw !== "light" && raw !== "dark") {
+		throw new TypeError('dsh-web-login: config pageTheme must be "auto", "light" or "dark"');
+	}
+	return raw;
+}
+
 /** Resolve the raw patch config into validated values, or throw on a typo. */
 function readConfig(raw) {
 	const source = typeof raw === "object" && raw !== null ? raw : {};
@@ -233,7 +243,8 @@ function readConfig(raw) {
 		clientIpHeader: text(source.clientIpHeader, DEFAULTS.clientIpHeader, "clientIpHeader").toLowerCase(),
 		allowLoopbackSetup: boolean(source.allowLoopbackSetup, DEFAULTS.allowLoopbackSetup, "allowLoopbackSetup"),
 		indexHtml: text(source.indexHtml, DEFAULTS.indexHtml, "indexHtml"),
-		unlockRemoteSettings: boolean(source.unlockRemoteSettings, DEFAULTS.unlockRemoteSettings, "unlockRemoteSettings")
+		unlockRemoteSettings: boolean(source.unlockRemoteSettings, DEFAULTS.unlockRemoteSettings, "unlockRemoteSettings"),
+		pageTheme: pageTheme(source.pageTheme, DEFAULTS.pageTheme)
 	};
 }
 
@@ -583,12 +594,13 @@ export function apply(ctx, config) {
 		const body =
 			state === undefined
 				? setupPage({
+						theme: resolved.pageTheme,
 						title: resolved.title,
 						error,
 						minLength: resolved.passwordMinLength,
 						needsToken: !(resolved.allowLoopbackSetup && isLoopbackRequest(req, resolved))
 					})
-				: loginPage({ title: resolved.title, error });
+				: loginPage({ title: resolved.title, error, theme: resolved.pageTheme });
 		sendHtml(req, res, status, body);
 	}
 
@@ -666,7 +678,7 @@ export function apply(ctx, config) {
 					process.stdout.write(`dsh web-login: ${line}\n`);
 				}
 			}
-			sendHtml(req, res, 403, fencePage({ title: resolved.title, host: authority, hint: trustedHostHint(authority) }));
+			sendHtml(req, res, 403, fencePage({ title: resolved.title, host: authority, hint: trustedHostHint(authority), theme: resolved.pageTheme }));
 			return;
 		}
 		if (renderIndex === undefined) {
@@ -685,7 +697,8 @@ export function apply(ctx, config) {
 					title: resolved.title,
 					heading: "前端资源不可用",
 					body: "无法读取前端 index.html。",
-					detail: error instanceof Error ? error.message : String(error)
+					detail: error instanceof Error ? error.message : String(error),
+					theme: resolved.pageTheme
 				})
 			);
 			return;
@@ -726,7 +739,8 @@ export function apply(ctx, config) {
 				messagePage({
 					title: resolved.title,
 					heading: "尝试过于频繁",
-					body: `请在 ${String(waiting)} 秒后重试。`
+					body: `请在 ${String(waiting)} 秒后重试。`,
+					theme: resolved.pageTheme
 				}),
 				{ "retry-after": String(waiting) }
 			);
@@ -822,7 +836,7 @@ export function apply(ctx, config) {
 			return;
 		}
 		if (req.method === "GET" || req.method === "HEAD") {
-			sendHtml(req, res, 200, accountPage({ title: resolved.title, minLength: resolved.passwordMinLength }));
+			sendHtml(req, res, 200, accountPage({ title: resolved.title, minLength: resolved.passwordMinLength, theme: resolved.pageTheme }));
 			return;
 		}
 		if (req.method !== "POST") {
@@ -836,7 +850,7 @@ export function apply(ctx, config) {
 				req,
 				res,
 				429,
-				messagePage({ title: resolved.title, heading: "尝试过于频繁", body: `请在 ${String(waiting)} 秒后重试。` }),
+				messagePage({ title: resolved.title, heading: "尝试过于频繁", body: `请在 ${String(waiting)} 秒后重试。`, theme: resolved.pageTheme }),
 				{ "retry-after": String(waiting) }
 			);
 			return;
@@ -862,6 +876,7 @@ export function apply(ctx, config) {
 				accountPage({
 					title: resolved.title,
 					minLength: resolved.passwordMinLength,
+					theme: resolved.pageTheme,
 					error: outcome.retryAfter > 0 ? `尝试过于频繁，请在 ${String(outcome.retryAfter)} 秒后重试。` : "当前密码不正确。"
 				})
 			);
@@ -874,12 +889,12 @@ export function apply(ctx, config) {
 				req,
 				res,
 				400,
-				accountPage({ title: resolved.title, minLength: resolved.passwordMinLength, error: `新密码至少需要 ${String(resolved.passwordMinLength)} 位。` })
+				accountPage({ title: resolved.title, minLength: resolved.passwordMinLength, theme: resolved.pageTheme, error: `新密码至少需要 ${String(resolved.passwordMinLength)} 位。` })
 			);
 			return;
 		}
 		if (next !== confirm) {
-			sendHtml(req, res, 400, accountPage({ title: resolved.title, minLength: resolved.passwordMinLength, error: "两次输入的新密码不一致。" }));
+			sendHtml(req, res, 400, accountPage({ title: resolved.title, minLength: resolved.passwordMinLength, theme: resolved.pageTheme, error: "两次输入的新密码不一致。" }));
 			return;
 		}
 		const rotated = await createState(next);
@@ -1001,6 +1016,7 @@ export const internals = {
 	derive,
 	FailureTracker,
 	readConfig,
+	pageTheme,
 	DEFAULTS,
 	COOKIE_NAME,
 	COOKIE_VERSION,
