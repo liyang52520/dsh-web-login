@@ -100,14 +100,24 @@ function textOf(node) {
 	return "";
 }
 
-/** Collect every element whose type is `tag` and return their props. */
+/** Collect every element whose type is `tag`. */
 function findAll(node, tag, out = []) {
 	if (node === null || typeof node !== "object") return out;
 	if (Array.isArray(node)) { for (const child of node) findAll(child, tag, out); return out; }
-	if (node.type === tag) out.push(node.props);
+	if (node.type === tag) out.push(node);
 	if (node.props?.children !== undefined) findAll(node.props.children, tag, out);
 	return out;
 }
+
+/** The rendered text of one element. */
+const labelOf = (node) => textOf(node.props.children);
+
+/** Every design-system Button label in a rendered tree, in document order. */
+const buttonLabels = (tree) => findAll(tree, "button").map(labelOf);
+
+/** Every dialog title rendered by the Modal stand-in, in document order. */
+const dialogTitles = (tree) =>
+	findAll(tree, "div").filter((n) => n.props["data-primitive"] === "modal").map((n) => n.props["data-title"]);
 
 test("the client bundle registers under the package id and exports a plugin face", async () => {
 	const { spec, face } = await loadClientHalf();
@@ -160,6 +170,7 @@ test("the section view renders the status table and both action groups", async (
 		},
 		changeOpen: true,
 		resetOpen: true,
+		logoutOpen: true,
 		form: { current: "", next: "", confirm: "" },
 		changeError: undefined,
 		resetPassword: "",
@@ -168,7 +179,8 @@ test("the section view renders the status table and both action groups", async (
 		busy: false,
 		handlers: {
 			onField() {}, onPassword() {}, onLogout() {}, onReset() {},
-			onOpenChange() {}, onCancelChange() {}, onOpenReset() {}, onCancelReset() {}, onResetField() {}
+			onOpenChange() {}, onCancelChange() {}, onOpenReset() {}, onCancelReset() {},
+			onOpenLogout() {}, onCancelLogout() {}, onResetField() {}
 		}
 	});
 	const text = textOf(render(element));
@@ -182,19 +194,22 @@ test("the section view renders the status table and both action groups", async (
 	assert.match(text, /修改密码/);
 	/*
 	 * Buttons must go through the design system rather than hand-rolled
-	 * elements. Nothing renders the tree here, so a Button usage shows up as an
-	 * element whose type is the component and whose props carry the variant.
+	 * elements.
 	 */
-	const buttons = findAll(render(element), "button").map((props) => props["data-primitive"]);
 	assert.deepEqual(
-		buttons,
-		["outline", "outline", "outline", "outline", "primary", "outline", "primary"],
-		"three page actions, then cancel/save and cancel/reset inside the two dialogs"
+		findAll(render(element), "button").map((n) => n.props["data-primitive"]),
+		["outline", "outline", "outline", "outline", "primary", "outline", "primary", "outline", "primary"],
+		"three page actions plus a cancel/confirm pair in each of the three dialogs"
+	);
+	assert.deepEqual(
+		buttonLabels(render(element)).slice(0, 3),
+		["修改密码", "重置密码", "退出登录"],
+		"logout must sit last in the action row"
 	);
 
 	/* The change form must be revealed by a button, not always on the page. */
 	const collapsed = face.sectionView({
-		status: undefined, changeOpen: false, resetOpen: false,
+		status: undefined, changeOpen: false, resetOpen: false, logoutOpen: false,
 		form: { current: "", next: "", confirm: "" }, changeError: undefined,
 		resetPassword: "", resetError: undefined, notice: undefined, busy: false,
 		handlers: {}
@@ -207,7 +222,7 @@ test("the section view renders the status table and both action groups", async (
 	assert.match(text, /重置密码/);
 });
 
-test("both password actions use the native modal, never window.prompt", async () => {
+test("every action uses the native modal, never window.prompt", async () => {
 	const { face } = await loadClientHalf();
 	const base = {
 		status: {
@@ -218,14 +233,23 @@ test("both password actions use the native modal, never window.prompt", async ()
 		resetPassword: "", resetError: undefined, notice: undefined, busy: false, handlers: {}
 	};
 
-	const both = render(face.sectionView({ ...base, changeOpen: true, resetOpen: true }));
-	const titles = findAll(both, "div").filter((p) => p["data-primitive"] === "modal").map((p) => p["data-title"]);
-	assert.deepEqual(titles, ["修改密码", "重置密码"], "each action gets its own dialog");
-	assert.match(textOf(both), /至少 8 位/, "the change dialog states the minimum length");
+	const all = render(face.sectionView({ ...base, changeOpen: true, resetOpen: true, logoutOpen: true }));
+	assert.deepEqual(
+		dialogTitles(all),
+		["修改密码", "重置密码", "退出登录"],
+		"each action gets its own dialog, and only one may be open at a time"
+	);
+	assert.match(textOf(all), /至少 8 位/, "the change dialog states the minimum length");
 
-	const reset = render(face.sectionView({ ...base, changeOpen: false, resetOpen: true }));
+	const reset = render(face.sectionView({ ...base, changeOpen: false, resetOpen: true, logoutOpen: false }));
+	assert.deepEqual(dialogTitles(reset), ["重置密码"]);
 	assert.match(textOf(reset), /请输入当前密码以确认/, "the consequence is spelled out");
 	assert.equal(textOf(reset).includes("确认新密码"), false, "the change dialog must not leak into the reset view");
+
+	const logout = render(face.sectionView({ ...base, changeOpen: false, resetOpen: false, logoutOpen: true }));
+	assert.deepEqual(dialogTitles(logout), ["退出登录"]);
+	assert.match(textOf(logout), /下次进入需要重新输入密码/, "logout explains what it does");
+	assert.equal(textOf(logout).includes("当前密码"), false, "logout must not ask for a password");
 
 	/* A failed submit must surface inside the dialog, not behind it. */
 	const failed = render(face.sectionView({ ...base, changeOpen: true, resetOpen: false, changeError: "当前密码不正确" }));

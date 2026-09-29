@@ -199,13 +199,14 @@ window.__ModuleLoader__.load({
 		 * @param props.form - change-password draft `{ current, next, confirm }`.
 		 * @param props.changeError - error to show inside the change dialog.
 		 * @param props.resetPassword - current-password draft for the reset dialog.
+		 * @param props.logoutOpen - whether the logout confirmation is open.
 		 * @param props.resetError - error to show inside the reset dialog.
 		 * @param props.notice - page-level `{ kind, text }`, or undefined.
 		 * @param props.busy - whether a request is in flight.
 		 * @param props.handlers - callbacks; see {@link WebLoginSection}.
 		 * @returns the section element tree.
 		 */
-		function sectionView({ status, changeOpen, resetOpen, form, changeError, resetPassword, resetError, notice, busy, handlers }) {
+		function sectionView({ status, changeOpen, resetOpen, logoutOpen, form, changeError, resetPassword, resetError, notice, busy, handlers }) {
 			const change = form ?? { current: "", next: "", confirm: "" };
 			const children = [
 				h("h2", { key: "h", style: heading }, "登录门禁"),
@@ -255,14 +256,15 @@ window.__ModuleLoader__.load({
 				h("div", { key: "actions-group" }, [
 					h("div", { key: "label", style: groupLabel }, "密码与会话"),
 					h("p", { key: "note", style: { margin: "0 0 14px", fontSize: 13, lineHeight: "20px", color: T.labelTertiary } },
-						"「退出登录」只清掉这台设备的登录态；「重置密码」会删除已保存的密码，所有设备都要重新设置。"),
+						"「重置密码」会删除已保存的密码，所有设备都要重新设置；「退出登录」只清掉这台设备的登录态。"),
 					h("div", { key: "buttons", style: { display: "flex", gap: 8, flexWrap: "wrap" } }, [
 						pill("outline", { key: "change", type: "button", disabled: busy, onClick: () => handlers.onOpenChange(), children: "修改密码" }),
-						pill("outline", { key: "logout", type: "button", disabled: busy, onClick: () => handlers.onLogout(), children: "退出登录" }),
 						pill("outline", {
 							key: "reset", type: "button", disabled: busy,
 							style: { color: T.error }, onClick: () => handlers.onOpenReset(), children: "重置密码"
-						})
+						}),
+						/* Logout goes last: it is the one that ends the session. */
+						pill("outline", { key: "logout", type: "button", disabled: busy, onClick: () => handlers.onOpenLogout(), children: "退出登录" })
 					])
 				])
 			);
@@ -325,6 +327,21 @@ window.__ModuleLoader__.load({
 				])
 			);
 
+			/* Logout ends the session, so it confirms first. No password needed. */
+			children.push(
+				dialog({
+					open: logoutOpen === true,
+					onClose: () => handlers.onCancelLogout(),
+					title: "退出登录",
+					description: "会清掉这台设备上的登录态，下次进入需要重新输入密码。其它设备不受影响。"
+				}, [
+					h("div", { key: "row", style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 24 } }, [
+						pill("outline", { key: "cancel", type: "button", onClick: () => handlers.onCancelLogout(), children: "取消" }),
+						pill("primary", { key: "confirm", type: "button", disabled: busy, onClick: () => handlers.onLogout(), children: "退出登录" })
+					])
+				])
+			);
+
 			return h("div", { style: { maxWidth: 564, fontFamily: FONT } }, children);
 		}
 
@@ -351,6 +368,7 @@ window.__ModuleLoader__.load({
 			const [resetPassword, setResetPassword] = React.useState("");
 			const [changeOpen, setChangeOpen] = React.useState(false);
 			const [resetOpen, setResetOpen] = React.useState(false);
+			const [logoutOpen, setLogoutOpen] = React.useState(false);
 			const [changeError, setChangeError] = React.useState(undefined);
 			const [resetError, setResetError] = React.useState(undefined);
 			const [notice, setNotice] = React.useState(undefined);
@@ -389,6 +407,13 @@ window.__ModuleLoader__.load({
 					setResetError(undefined);
 					setResetPassword("");
 					setResetOpen(true);
+				},
+				onOpenLogout() {
+					setNotice(undefined);
+					setLogoutOpen(true);
+				},
+				onCancelLogout() {
+					setLogoutOpen(false);
 				},
 				onCancelReset() {
 					setResetPassword("");
@@ -438,7 +463,7 @@ window.__ModuleLoader__.load({
 			};
 
 			return sectionView({
-				status, changeOpen, resetOpen, form, changeError, resetPassword, resetError, notice, busy, handlers
+				status, changeOpen, resetOpen, logoutOpen, form, changeError, resetPassword, resetError, notice, busy, handlers
 			});
 		}
 
