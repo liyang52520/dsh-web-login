@@ -1,0 +1,15 @@
+# dsh-web-login bundle patch: one insert over the profile root.
+#
+# Installing this package with `dsh plugin --profile web add <spec>` appends the
+# package to the profile's `dsh.profile.bundles`, so this row activates without
+# any manual edit. To configure it, target the row id from the profile's own
+# cordis.patch.yml (the user layer is applied after every bundle, and a patch
+# replaces the row's whole config):
+#
+#   - id: web-login
+#     config:
+#       title: My Harness
+#       rememberDays: 90
+- insert:
+    - id: web-login
+      name: dsh-web-login

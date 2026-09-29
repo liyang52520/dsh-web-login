@@ -1,0 +1,45 @@
+{
+  "name": "dsh-web-login",
+  "version": "1.0.0",
+  "description": "Password gate for the DeepSeek Harness Web GUI: first-run password setup, remember-me sessions, brute-force lockout.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "page.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "cordis-plugin",
+    "login",
+    "password",
+    "authentication"
+  ],
+  "license": "MIT",
+  "author": "liyang52520",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liyang52520/dsh-web-login.git"
+  },
+  "bugs": {
+    "url": "https://github.com/liyang52520/dsh-web-login/issues"
+  },
+  "homepage": "https://github.com/liyang52520/dsh-web-login#readme",
+  "engines": {
+    "node": ">=20"
+  }
+}
