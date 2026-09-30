@@ -38,7 +38,20 @@ function loadReact() {
 		}
 	}
 	return {
-		React: { createElement: (type, props, ...children) => ({ type, props: { ...props, children } }) },
+		React: {
+			/*
+			 * Mirrors React's own rule: children passed as arguments win, a single
+			 * child is not wrapped in an array, and passing none leaves a `children`
+			 * already present in props untouched. Overwriting unconditionally made
+			 * `createElement(Component, { children })` lose its label.
+			 */
+			createElement: (type, props, ...children) => {
+				const merged = { ...props };
+				if (children.length === 1) merged.children = children[0];
+				else if (children.length > 1) merged.children = children;
+				return { type, props: merged };
+			}
+		},
 		real: false
 	};
 }
