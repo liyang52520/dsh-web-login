@@ -1,46 +1,48 @@
 # dsh-web-login
 
-DeepSeek Harness Web GUI 的独立密码验证层。
+[中文](README.zh-CN.md) · English
 
-零运行时依赖的 Cordis 插件。接管 `/` 与 `/index.html`：未通过验证的请求不会转发至 Harness，启动 token 亦不下发。Harness 自身的鉴权逻辑与 `/api/*` 不受影响。
+An independent password gate for the DeepSeek Harness Web GUI.
 
-![登录页](docs/login.png)
+Zero-dependency Cordis plugin. Takes over `/` and `/index.html`: a request that has not passed verification is not forwarded to Harness, and the launch token is not handed out. Harness's own authentication and `/api/*` are unaffected.
 
-## 特性
+![Login page](docs/login.png)
 
-- **首次设置**：首次访问时设置密码，以启动日志中的一次性口令校验，防止公网抢先初始化
-- **登录态**：「记住我」默认 30 天，否则默认 12 小时，均可配置
-- **失败锁定**：同一来源连续失败 5 次后锁定 300 秒，按真实客户端 IP 计数
-- **审计日志**：记录登录、改密、锁定与退出事件，不含密码内容
-- **管理界面**：集成于 Harness 设置，提供修改密码、重置密码与退出登录
-- **凭据存储**：密码经 scrypt 加盐哈希；登录态 Cookie 经 HMAC-SHA256 签名并绑定主机
+## Features
 
-## 安装
+- **First-run setup** — the password is set on first visit and verified against a one-time token printed at startup, so a public scanner cannot claim the instance first
+- **Sessions** — "Remember me" lasts 30 days, 12 hours otherwise; both configurable
+- **Lockout** — 5 consecutive failures from one source lock it out for 300 seconds, counted per real client IP
+- **Audit log** — records sign-ins, password changes, lockouts and sign-outs, never the password itself
+- **Management UI** — a page inside Harness's own settings for changing the password, resetting it, and signing out
+- **Credential storage** — scrypt-salted password hash; the session cookie is HMAC-SHA256 signed and bound to the host
 
-前置条件：pnpm。dsh 不内置 pnpm；缺失时安装命令以 `pnpm was not found` 失败，且不改动 profile。
+## Install
+
+Requires pnpm. dsh does not bundle it; without pnpm the install command fails with `pnpm was not found` and leaves the profile unchanged.
 
 ```bash
 npm i -g pnpm
 dsh plugin --profile web add git+https://github.com/liyang52520/dsh-web-login.git
 ```
 
-本包声明 `dsh.bundle`，安装后由 dsh 自动注册至 `dsh.profile.bundles`，无需手工编辑配置。
+The package declares `dsh.bundle`, so dsh registers it under `dsh.profile.bundles` automatically. No configuration file needs editing.
 
-重启 dsh 以加载插件；systemd 部署使用 `systemctl restart dsh`。
+Restart dsh to load the plugin. Under systemd that is `systemctl restart dsh`.
 
-维护命令：
+Maintenance:
 
 ```bash
-dsh plugin --profile web update dsh-web-login    # 升级
-dsh plugin --profile web remove dsh-web-login    # 卸载
+dsh plugin --profile web update dsh-web-login    # upgrade
+dsh plugin --profile web remove dsh-web-login    # uninstall
 ```
 
-`DSH_HOME` 须与运行中实例一致（默认 `~/.dsh`）。路径不一致时命令仍返回成功，但插件将安装至其它 profile，对当前实例不生效。
+`DSH_HOME` must match the running instance (default `~/.dsh`). With any other path the command still succeeds, but installs into a different profile and has no effect on the running instance.
 
 <details>
-<summary>手动安装（不使用 dsh plugin）</summary>
+<summary>Manual install (without dsh plugin)</summary>
 
-经 pnpm 安装：
+Via pnpm:
 
 ```bash
 cd "${DSH_HOME:-$HOME/.dsh}/profiles/web"
@@ -53,7 +55,7 @@ grep -q web-login cordis.patch.yml 2>/dev/null || cat >> cordis.patch.yml <<'EOF
 EOF
 ```
 
-不使用 pnpm 时，改为复制受版本控制的文件，并写入同上 `insert` 段：
+Without pnpm, copy the tracked files instead and write the same `insert` block:
 
 ```bash
 git clone https://github.com/liyang52520/dsh-web-login.git /opt/dsh-web-login
@@ -62,73 +64,73 @@ mkdir -p "$PROFILE/node_modules/dsh-web-login"
 git -C /opt/dsh-web-login archive HEAD | tar -x -C "$PROFILE/node_modules/dsh-web-login"
 ```
 
-两种挂载方式不可混用：bundle 与 `insert` 各产生一行 `web-login`，重复 id 将导致配置树加载失败。
+The two mounting methods must not be combined: a bundle and an `insert` row each produce a `web-login` entry, and the duplicate id prevents the configuration tree from loading.
 
 </details>
 
-## 使用
+## Usage
 
-### 首次设置
+### First-run setup
 
-dsh 启动时输出一次性初始化口令：
+dsh prints a one-time setup token at startup:
 
 ```
 dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 ```
 
-检索方式依部署而定：systemd 使用 `journalctl -u dsh`，前台运行见终端输出，容器使用 `docker logs`。
+Where to find it depends on the deployment: `journalctl -u dsh` under systemd, the terminal for a foreground run, `docker logs` in a container.
 
-访问站点，输入该口令并设置密码。
+Visit the site, enter the token and set a password.
 
-### 管理界面
+### Management UI
 
-登录后进入 Harness 的 **设置 → 登录门禁**：
+Once signed in, the gate is managed from **Settings → 登录门禁** (Login Gate) inside Harness. A Chinese label is expected at present; see [Interface language](#interface-language).
 
-![设置页](docs/settings.jpg)
+![Settings page](docs/settings.jpg)
 
-| 操作 | 说明 |
+| Action | Effect |
 |---|---|
-| 修改密码 | 验证当前密码后设置新密码；轮换签名密钥，其它设备登录态失效 |
-| 重置密码 | 删除密码记录，所有设备需重新执行首次设置 |
-| 退出登录 | 仅清除当前设备的登录态 |
+| Change password | Verifies the current password, then sets a new one; rotates the signing key, invalidating sessions on other devices |
+| Reset password | Deletes the stored password; every device must run first-run setup again |
+| Sign out | Clears this device's session only |
 
-界面配色跟随 Harness 的主题设置。
+The panel follows Harness's theme setting.
 
-![深色主题](docs/settings-dark.jpg)
+![Dark theme](docs/settings-dark.jpg)
 
-## 配置
+## Configuration
 
-配置项写入 profile 的 `cordis.patch.yml`：
+Configuration is written to the profile's `cordis.patch.yml`:
 
 ```yaml
 - id: web-login
   config:
-    title: 我的 Harness
+    title: My Harness
     rememberDays: 7
 ```
 
-`config` 为整体替换；未列出的键使用默认值。
+`config` is replaced as a whole; unlisted keys keep their defaults.
 
-| 键 | 默认值 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `enabled` | `true` | 设为 `false` 时不接管任何路由 |
-| `title` | `"DeepSeek Harness"` | 页面标题与登录页标题 |
-| `passwordMinLength` | `8` | 密码最短长度 |
-| `rememberDays` | `30` | 勾选「记住我」时的登录态天数 |
-| `sessionHours` | `12` | 未勾选时的登录态小时数 |
-| `maxFailures` | `5` | 连续失败多少次后锁定 |
-| `lockoutSeconds` | `300` | 锁定时长（秒） |
-| `clientIpHeader` | `"x-real-ip"` | 用于获取真实客户端 IP 的请求头，决定限流计数对象 |
-| `allowLoopbackSetup` | `false` | 允许回环地址在无初始化口令的情况下设置密码 |
-| `indexHtml` | `""` | 手动指定前端 `index.html` 路径 |
-| `unlockRemoteSettings` | `true` | 允许远程浏览器修改设置，参见「设置页只读」 |
-| `pageTheme` | `"auto"` | 登录页配色：`auto` / `light` / `dark` |
+| `enabled` | `true` | Set to `false` to take over no routes at all |
+| `title` | `"DeepSeek Harness"` | Page title and login page heading |
+| `passwordMinLength` | `8` | Minimum password length |
+| `rememberDays` | `30` | Session lifetime when "Remember me" is checked |
+| `sessionHours` | `12` | Session lifetime otherwise |
+| `maxFailures` | `5` | Consecutive failures before a lockout |
+| `lockoutSeconds` | `300` | Lockout duration in seconds |
+| `clientIpHeader` | `"x-real-ip"` | Header used to obtain the real client IP; determines what the rate limit counts |
+| `allowLoopbackSetup` | `false` | Allow loopback addresses to set a password without the setup token |
+| `indexHtml` | `""` | Explicit path to the frontend `index.html` |
+| `unlockRemoteSettings` | `true` | Allow remote browsers to change settings; see "Settings are read-only" |
+| `pageTheme` | `"auto"` | Login page colour scheme: `auto` / `light` / `dark` |
 
-## 排障
+## Troubleshooting
 
-### 登录成功，接口返回 403
+### Signed in, but requests return 403
 
-Harness 的 Host/Origin 校验不包含访问所使用的主机名。插件首次检测到该情况时，将在输出中给出所需配置，并在页面显示 Harness 实际收到的 Host：
+Harness's Host/Origin check does not cover the hostname in use. On first encountering this, the plugin prints the required configuration and shows the Host Harness actually received:
 
 ```
 dsh web-login: 1) 给 dsh 声明这个主机：--trusted-host harness.example
@@ -137,73 +139,77 @@ dsh web-login:      proxy_set_header Host   $http_host;
 dsh web-login:      proxy_set_header Origin $http_origin;
 ```
 
-第 1 步为必需；第 2 步仅适用于经反向代理访问的场景。
+Step 1 is always required; step 2 applies only when access goes through a reverse proxy.
 
-### 设置页只读，提示 settings are unavailable in this browser
+### Settings are read-only, reporting "settings are unavailable in this browser"
 
-Harness 仅允许本机浏览器修改设置。经回环地址或 SSH 隧道访问属本机；经反向代理自公网访问则不属，此时设置页只读并显示上述提示，页面顶部的欢迎说明亦会在每次刷新后重新出现。
+Harness permits only loopback browsers to change settings. Access over a loopback address or an SSH tunnel counts as loopback; access from the public internet through a reverse proxy does not, so the settings page is read-only, shows that message, and the welcome notice reappears on every reload.
 
-本插件默认将已通过密码验证的远程浏览器视为本机（`unlockRemoteSettings: true`），设置页可正常使用。如不需该行为，设为 `false`。
+The plugin treats password-verified remote browsers as loopback by default (`unlockRemoteSettings: true`), which restores normal settings access. Set it to `false` to disable that behaviour.
 
-### 忘记密码
+### Forgot the password
 
-停止服务，删除 `$DSH_HOME/.credentials.yaml` 中的 `dsh-web-login/state` 段，重启后重新执行首次设置：
+Stop the service, delete the `dsh-web-login/state` block from `$DSH_HOME/.credentials.yaml`, and restart. The next visit runs first-run setup again:
 
 ```yaml
-dsh-web-login/state:        # 连同下方内容一并删除
+dsh-web-login/state:        # delete this block and everything under it
   kind: grant
   payload:
     version: 1
     algorithm: scrypt
 ```
 
-### 审计日志
+### Audit log
 
-审计记录输出至 dsh 的标准输出，每行以 `dsh web-login: audit` 开头。systemd 部署下：
+Audit records go to dsh's standard output, one line each, prefixed with `dsh web-login: audit`. Under systemd:
 
 ```bash
 journalctl -u dsh --no-pager | grep 'dsh web-login: audit'
 ```
 
-事件类型：`password-set`、`login-ok`、`login-failed`、`password-changed`、`password-change-failed`、`password-reset`、`reset-failed`、`setup-token-failed`、`lockout`、`logout`、`fence-rejected`、`api-cross-origin-rejected`。失败事件附带累计次数。
+Event types: `password-set`, `login-ok`, `login-failed`, `password-changed`, `password-change-failed`, `password-reset`, `reset-failed`, `setup-token-failed`, `lockout`, `logout`, `fence-rejected`, `api-cross-origin-rejected`. Failure events carry a running count.
 
-## 安全说明
+## Security
 
-**可防御**：扫描器、僵尸网络，以及获取 URL 但不在网络链路上的第三方。此类访问仅能看到登录页，且无法调用 `/api`。
+**Defended against**: scanners, botnets, and third parties who obtain the URL but are not on the network path. Such access sees only the login page and cannot call `/api`.
 
-**不可防御链路上的窃听者**：明文 HTTP 下密码与 Cookie 均以明文传输，属协议固有限制，非本插件所致。条件允许时应以 SSH 隧道替代直接暴露端口，且无需域名与证书：
-
-```bash
-ssh -N -L 3080:127.0.0.1:3080 user@<服务器地址>
-# 本地访问 http://127.0.0.1:3080/
-```
-
-此时端口未对公网开放，本插件仍正常工作。其它已知边界：
-
-- 密码经 scrypt（N=16384, r=8, p=1）加盐哈希，存储于 `$DSH_HOME/.credentials.yaml`，权限 0600
-- 登录态 Cookie 经 HMAC-SHA256 签名并绑定访问所使用的主机，换用其它主机名访问或伪造 Cookie 均无效
-- 限流记录保存于内存，重启后清零；可防御单来源暴力破解，不防御分布式慢速爆破，但所有失败均写入审计日志
-- 修改密码将轮换签名密钥，其它设备登录态随即失效
-- 插件拥有宿主进程的完整权限，请仅使用经过审阅的版本
-
-## 开发
+**Not defended against an on-path eavesdropper**: over plain HTTP the password and cookies travel in the clear. This is a limitation of the protocol, not of the plugin. Where possible, an SSH tunnel is preferable to exposing the port, and requires neither a domain nor a certificate:
 
 ```bash
-npm test        # node:test，零依赖
+ssh -N -L 3080:127.0.0.1:3080 user@<server>
+# then open http://127.0.0.1:3080/ locally
 ```
 
-覆盖密码哈希与校验、Cookie 签名（重放、篡改、跨主机、过期）、限流与锁定隔离、主机名归一化、配置校验，以及浏览器半边的模块封装、slot 注册与渲染结果。
+The port is then not exposed publicly, and the plugin still applies. Other known boundaries:
 
-浏览器半边 `client.js` 为手写的 `window.__ModuleLoader__.load` 封装，无需打包器，运行时仅 `require("react")`。
+- The password is stored as a scrypt hash (N=16384, r=8, p=1) in `$DSH_HOME/.credentials.yaml`, mode 0600
+- The session cookie is HMAC-SHA256 signed and bound to the host in use; another hostname or a forged cookie is rejected
+- Rate-limit state is held in memory and cleared on restart; it defends against single-source brute force, not distributed slow attacks, but every failure is written to the audit log
+- Changing the password rotates the signing key, immediately invalidating sessions on other devices
+- The plugin has full access to the host process. Use only versions you have reviewed
 
-## 兼容性
+## Interface language
 
-| dsh 版本 | 状态 |
+All gate strings are currently Chinese, in the login and setup pages and in the settings panel. An English interface is not implemented; the screenshots above show the Chinese text. `pageTheme` selects the colour scheme only.
+
+## Development
+
+```bash
+npm test        # node:test, no dependencies
+```
+
+Covers password hashing and verification, cookie signing (replay, tampering, cross-host, expiry), rate limiting and per-address lockout isolation, hostname normalisation, configuration validation, and the browser half's module envelope, slot registration and rendered output.
+
+The browser half `client.js` is a hand-written `window.__ModuleLoader__.load` envelope. No bundler is required, and its only runtime import is `react`.
+
+## Compatibility
+
+| dsh version | Status |
 |---|---|
-| `0.2.0-rc.2` | 线上验证（Linux + nginx） |
-| `0.1.2-rc.1` | 开发与测试（macOS） |
+| `0.2.0-rc.2` | Verified in production (Linux + nginx) |
+| `0.1.2-rc.1` | Development and testing (macOS) |
 
-依赖的 Harness 公开 Service 为 `connection.authorizeIndex()`、`connection.authenticatedUrl()`、`connection.requestRejection()`，以及 `webServer` 的 exact 路由注册与 `credentials` 的记录读写。
+The Harness services used are `connection.authorizeIndex()`, `connection.authenticatedUrl()` and `connection.requestRejection()`, plus the `webServer` exact-route registration and the `credentials` record API.
 
 ## License
 

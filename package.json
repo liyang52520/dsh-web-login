@@ -1,7 +1,7 @@
 {
   "name": "dsh-web-login",
   "version": "1.3.0",
-  "description": "Password gate for the DeepSeek Harness Web GUI: first-run password setup, remember-me sessions, brute-force lockout.",
+  "description": "Password gate for the DeepSeek Harness Web GUI: first-run password setup, remember-me sessions, brute-force lockout, audit log, and a management page inside Harness settings.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -29,17 +29,19 @@
     }
   },
   "keywords": [
-    "audit-log",
-    "authentication",
-    "cordis",
-    "cordis-plugin",
+    "deepseek",
     "deepseek-harness",
     "dsh",
-    "login",
+    "dsh-plugin",
+    "cordis",
+    "cordis-plugin",
     "password",
-    "password-change",
-    "remote-access",
-    "reverse-proxy"
+    "authentication",
+    "login",
+    "reverse-proxy",
+    "nginx",
+    "self-hosted",
+    "audit-log"
   ],
   "license": "MIT",
   "author": "liyang52520",
