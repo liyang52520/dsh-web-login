@@ -1,46 +1,46 @@
 # dsh-web-login
 
-为 DeepSeek Harness Web GUI 提供独立的密码验证层。
+DeepSeek Harness Web GUI 的独立密码验证层。
 
-零运行时依赖的 Cordis 插件。接管 `/` 与 `/index.html`，未通过验证时不向 Harness 转发启动 token；不改动 Harness 自身的鉴权逻辑，不涉及 `/api/*`。
+零运行时依赖的 Cordis 插件。接管 `/` 与 `/index.html`：未通过验证的请求不会转发至 Harness，启动 token 亦不下发。Harness 自身的鉴权逻辑与 `/api/*` 不受影响。
 
 ![登录页](docs/login.png)
 
 ## 特性
 
-- **首次设置**：首次访问引导设置密码，以启动时打印的一次性口令校验，避免公网扫描器抢先初始化
-- **登录态管理**：勾选「记住我」默认 30 天，否则默认 12 小时，均可配置
+- **首次设置**：首次访问时设置密码，以启动日志中的一次性口令校验，防止公网抢先初始化
+- **登录态**：「记住我」默认 30 天，否则默认 12 小时，均可配置
 - **失败锁定**：同一来源连续失败 5 次后锁定 300 秒，按真实客户端 IP 计数
-- **审计日志**：记录登录成功与失败、改密、锁定、退出，且不记录密码内容
-- **管理界面**：集成在 Harness 设置中，提供修改密码、重置密码、退出登录
-- **凭据安全**：密码以 scrypt 加盐哈希存储；登录态 Cookie 使用 HMAC-SHA256 签名，并绑定访问时使用的主机
+- **审计日志**：记录登录、改密、锁定与退出事件，不含密码内容
+- **管理界面**：集成于 Harness 设置，提供修改密码、重置密码与退出登录
+- **凭据存储**：密码经 scrypt 加盐哈希；登录态 Cookie 经 HMAC-SHA256 签名并绑定主机
 
 ## 安装
 
-需要 pnpm。dsh 自身不带 pnpm，也不会代为安装；缺失时命令会提示 `pnpm was not found; install pnpm and make it available on PATH` 并放弃，profile 不会被改动。
+前置条件：pnpm。dsh 不内置 pnpm；缺失时安装命令以 `pnpm was not found` 失败，且不改动 profile。
 
 ```bash
 npm i -g pnpm
 dsh plugin --profile web add git+https://github.com/liyang52520/dsh-web-login.git
 ```
 
-插件声明了 `dsh.bundle`，因此 `dsh plugin add` 会自动写入 `dsh.profile.bundles` 并安装依赖，无需手工编辑配置文件。
+本包声明 `dsh.bundle`，安装后由 dsh 自动注册至 `dsh.profile.bundles`，无需手工编辑配置。
 
-之后重启 dsh 使插件生效。用 systemd 时是 `systemctl restart dsh`，其它部署方式重启对应进程即可。
+重启 dsh 以加载插件；systemd 部署使用 `systemctl restart dsh`。
 
-后续维护：
+维护命令：
 
 ```bash
 dsh plugin --profile web update dsh-web-login    # 升级
 dsh plugin --profile web remove dsh-web-login    # 卸载
 ```
 
-> **注意 `DSH_HOME`。** 该命令按 `$DSH_HOME`（默认 `~/.dsh`）确定目标 profile。若指定的路径与运行中实例不一致，命令仍会成功，但插件会安装到另一个 profile，对当前实例不生效。
+`DSH_HOME` 须与运行中实例一致（默认 `~/.dsh`）。路径不一致时命令仍返回成功，但插件将安装至其它 profile，对当前实例不生效。
 
 <details>
-<summary>不使用 dsh plugin 的手动安装</summary>
+<summary>手动安装（不使用 dsh plugin）</summary>
 
-使用 pnpm：
+经 pnpm 安装：
 
 ```bash
 cd "${DSH_HOME:-$HOME/.dsh}/profiles/web"
@@ -53,9 +53,7 @@ grep -q web-login cordis.patch.yml 2>/dev/null || cat >> cordis.patch.yml <<'EOF
 EOF
 ```
 
-然后重启 dsh。
-
-不使用 pnpm 时，改为复制受版本控制的文件，并写入上面同一段 `insert`：
+不使用 pnpm 时，改为复制受版本控制的文件，并写入同上 `insert` 段：
 
 ```bash
 git clone https://github.com/liyang52520/dsh-web-login.git /opt/dsh-web-login
@@ -64,7 +62,7 @@ mkdir -p "$PROFILE/node_modules/dsh-web-login"
 git -C /opt/dsh-web-login archive HEAD | tar -x -C "$PROFILE/node_modules/dsh-web-login"
 ```
 
-手动安装与 `dsh plugin` 不可混用：两种挂载方式会各产生一行 `web-login`，重复 id 会导致配置树加载失败。
+两种挂载方式不可混用：bundle 与 `insert` 各产生一行 `web-login`，重复 id 将导致配置树加载失败。
 
 </details>
 
@@ -72,35 +70,35 @@ git -C /opt/dsh-web-login archive HEAD | tar -x -C "$PROFILE/node_modules/dsh-we
 
 ### 首次设置
 
-dsh 启动时会把一次性初始化口令打印到自己的输出里：
+dsh 启动时输出一次性初始化口令：
 
 ```
 dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 ```
 
-在你启动 dsh 的地方查找这一行 —— systemd 用 `journalctl -u dsh`，直接运行看终端输出，容器用 `docker logs`。
+检索方式依部署而定：systemd 使用 `journalctl -u dsh`，前台运行见终端输出，容器使用 `docker logs`。
 
 访问站点，输入该口令并设置密码。
 
 ### 管理界面
 
-登录后在 Harness 的 **设置 → 登录门禁** 中管理：
+登录后进入 Harness 的 **设置 → 登录门禁**：
 
 ![设置页](docs/settings.jpg)
 
 | 操作 | 说明 |
 |---|---|
-| 修改密码 | 验证当前密码后设置新密码；同时轮换签名密钥，其它设备的登录态立即失效 |
+| 修改密码 | 验证当前密码后设置新密码；轮换签名密钥，其它设备登录态失效 |
 | 重置密码 | 删除密码记录，所有设备需重新执行首次设置 |
 | 退出登录 | 仅清除当前设备的登录态 |
 
-界面跟随 Harness 的主题设置。
+界面配色跟随 Harness 的主题设置。
 
 ![深色主题](docs/settings-dark.jpg)
 
 ## 配置
 
-配置写入 profile 的 `cordis.patch.yml`：
+配置项写入 profile 的 `cordis.patch.yml`：
 
 ```yaml
 - id: web-login
@@ -109,7 +107,7 @@ dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
     rememberDays: 7
 ```
 
-`config` 为整体替换，未列出的键使用默认值。
+`config` 为整体替换；未列出的键使用默认值。
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
@@ -123,14 +121,14 @@ dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 | `clientIpHeader` | `"x-real-ip"` | 用于获取真实客户端 IP 的请求头，决定限流计数对象 |
 | `allowLoopbackSetup` | `false` | 允许回环地址在无初始化口令的情况下设置密码 |
 | `indexHtml` | `""` | 手动指定前端 `index.html` 路径 |
-| `unlockRemoteSettings` | `true` | 让远程浏览器也能修改设置，见「设置页只读」 |
+| `unlockRemoteSettings` | `true` | 允许远程浏览器修改设置，参见「设置页只读」 |
 | `pageTheme` | `"auto"` | 登录页配色：`auto` / `light` / `dark` |
 
 ## 排障
 
-### 登录成功，但所有接口返回 403
+### 登录成功，接口返回 403
 
-Harness 的 Host/Origin 校验未包含你访问时使用的主机名。插件首次遇到该情况时会输出所需操作，并在页面上显示 Harness 实际收到的 Host：
+Harness 的 Host/Origin 校验不包含访问所使用的主机名。插件首次检测到该情况时，将在输出中给出所需配置，并在页面显示 Harness 实际收到的 Host：
 
 ```
 dsh web-login: 1) 给 dsh 声明这个主机：--trusted-host harness.example
@@ -139,13 +137,13 @@ dsh web-login:      proxy_set_header Host   $http_host;
 dsh web-login:      proxy_set_header Origin $http_origin;
 ```
 
-第 1 步无论如何都要做；第 2 步仅在经反向代理访问时需要。
+第 1 步为必需；第 2 步仅适用于经反向代理访问的场景。
 
 ### 设置页只读，提示 settings are unavailable in this browser
 
-Harness 只允许**本机**浏览器修改设置：通过回环地址或 SSH 隧道访问算本机，经反向代理从公网访问不算。所以远程访问时设置页只读，并显示这行提示；页面顶部的欢迎说明也会每次刷新重新出现。
+Harness 仅允许本机浏览器修改设置。经回环地址或 SSH 隧道访问属本机；经反向代理自公网访问则不属，此时设置页只读并显示上述提示，页面顶部的欢迎说明亦会在每次刷新后重新出现。
 
-本插件默认把**已通过密码验证**的远程浏览器当作本机（`unlockRemoteSettings: true`），使设置页恢复正常。若不需要该行为，将其设为 `false`。
+本插件默认将已通过密码验证的远程浏览器视为本机（`unlockRemoteSettings: true`），设置页可正常使用。如不需该行为，设为 `false`。
 
 ### 忘记密码
 
@@ -161,31 +159,31 @@ dsh-web-login/state:        # 连同下方内容一并删除
 
 ### 审计日志
 
-审计记录同样输出到 dsh 的标准输出，每行以 `dsh web-login: audit` 开头。systemd 部署下：
+审计记录输出至 dsh 的标准输出，每行以 `dsh web-login: audit` 开头。systemd 部署下：
 
 ```bash
 journalctl -u dsh --no-pager | grep 'dsh web-login: audit'
 ```
 
-事件类型：`password-set`、`login-ok`、`login-failed`、`password-changed`、`password-change-failed`、`password-reset`、`reset-failed`、`setup-token-failed`、`lockout`、`logout`、`fence-rejected`、`api-cross-origin-rejected`。失败事件会附带累计次数。
+事件类型：`password-set`、`login-ok`、`login-failed`、`password-changed`、`password-change-failed`、`password-reset`、`reset-failed`、`setup-token-failed`、`lockout`、`logout`、`fence-rejected`、`api-cross-origin-rejected`。失败事件附带累计次数。
 
 ## 安全说明
 
-**可防御**：扫描器、僵尸网络，以及获取到 URL 但不在网络链路上的第三方。此类访问只能看到登录页，且无法调用 `/api`。
+**可防御**：扫描器、僵尸网络，以及获取 URL 但不在网络链路上的第三方。此类访问仅能看到登录页，且无法调用 `/api`。
 
-**不可防御链路上的窃听者**：明文 HTTP 下密码与 Cookie 均以明文传输，这是协议本身的限制而非本插件的问题。条件允许时应优先使用 SSH 隧道而非直接暴露端口，且无需域名与证书：
+**不可防御链路上的窃听者**：明文 HTTP 下密码与 Cookie 均以明文传输，属协议固有限制，非本插件所致。条件允许时应以 SSH 隧道替代直接暴露端口，且无需域名与证书：
 
 ```bash
-ssh -N -L 3080:127.0.0.1:3080 user@你的服务器
+ssh -N -L 3080:127.0.0.1:3080 user@<服务器地址>
 # 本地访问 http://127.0.0.1:3080/
 ```
 
 此时端口未对公网开放，本插件仍正常工作。其它已知边界：
 
-- 密码使用 scrypt（N=16384, r=8, p=1）加盐哈希，存储于 `$DSH_HOME/.credentials.yaml`，权限 0600
-- 登录态 Cookie 使用 HMAC-SHA256 签名并绑定访问时使用的主机，换用其它主机名访问或伪造 Cookie 均无效
-- 限流记录保存在内存中，重启后清零；可防御单来源暴力破解，不防御分布式慢速爆破，但所有失败都会写入审计日志
-- 修改密码会轮换签名密钥，其它设备的登录态立即失效
+- 密码经 scrypt（N=16384, r=8, p=1）加盐哈希，存储于 `$DSH_HOME/.credentials.yaml`，权限 0600
+- 登录态 Cookie 经 HMAC-SHA256 签名并绑定访问所使用的主机，换用其它主机名访问或伪造 Cookie 均无效
+- 限流记录保存于内存，重启后清零；可防御单来源暴力破解，不防御分布式慢速爆破，但所有失败均写入审计日志
+- 修改密码将轮换签名密钥，其它设备登录态随即失效
 - 插件拥有宿主进程的完整权限，请仅使用经过审阅的版本
 
 ## 开发
