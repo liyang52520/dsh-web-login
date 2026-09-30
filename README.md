@@ -17,9 +17,10 @@
 
 ## 安装
 
-要求 pnpm，未安装时执行 `npm i -g pnpm`。
+需要 pnpm。dsh 自身不带 pnpm，也不会代为安装；缺失时命令会提示 `pnpm was not found; install pnpm and make it available on PATH` 并放弃，profile 不会被改动。
 
 ```bash
+npm i -g pnpm
 dsh plugin --profile web add git+https://github.com/liyang52520/dsh-web-login.git
 ```
 
