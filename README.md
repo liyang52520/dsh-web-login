@@ -30,7 +30,23 @@ Harness 的凭证是启动时打印的一次性 token URL —— 进了日志、
 
 ## 安装
 
-需要 pnpm（没有就 `npm i -g pnpm`）。复制粘贴：
+需要 pnpm（没有就 `npm i -g pnpm`）：
+
+```bash
+dsh plugin --profile web add git+https://github.com/liyang52520/dsh-web-login.git
+systemctl restart dsh
+```
+
+就这两行。本包声明了 `dsh.bundle`，所以 `dsh plugin add` 会自动写进 `dsh.profile.bundles` 并把依赖装好，**不需要手写任何配置**。
+
+升级 `dsh plugin --profile web update dsh-web-login`，卸载 `dsh plugin --profile web remove dsh-web-login`，之后都重启一下。
+
+> ⚠️ 确认 `DSH_HOME`：`dsh plugin` 按 `$DSH_HOME`（未设置时 `~/.dsh`）决定操作哪个 profile。传错的话它会**安静地在另一个路径新建 profile 并装好** —— 命令成功、退出码 0，但线上毫无变化。
+
+<details>
+<summary>不想用 dsh plugin（手动装）</summary>
+
+**用 pnpm：**
 
 ```bash
 cd "${DSH_HOME:-$HOME/.dsh}/profiles/web"
@@ -45,7 +61,18 @@ EOF
 systemctl restart dsh
 ```
 
-升级 = 重跑 `pnpm add` + 重启。
+**连 pnpm 也不用**（把受版本控制的文件直接复制进去，再写上面那段 `insert`）：
+
+```bash
+git clone https://github.com/liyang52520/dsh-web-login.git /opt/dsh-web-login
+PROFILE="${DSH_HOME:-$HOME/.dsh}/profiles/web"
+mkdir -p "$PROFILE/node_modules/dsh-web-login"
+git -C /opt/dsh-web-login archive HEAD | tar -x -C "$PROFILE/node_modules/dsh-web-login"
+```
+
+手动装和 `dsh plugin` **别混用** —— bundle 和 `insert` 会各产生一行 `web-login`，重复 id 会让配置树加载失败。
+
+</details>
 
 ## 使用
 
@@ -91,28 +118,6 @@ dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 `config` 是**整块替换**，写几个生效几个。
 
 **`unlockRemoteSettings`**：Harness 默认只让本机浏览器读写 host 侧设置，远程会看到 `settings are unavailable in this browser`。开启后，**已过密码门**的远程浏览器被当作本机。不想要就设 `false`。
-
-</details>
-
-<details>
-<summary>其它安装方式</summary>
-
-**用官方的 `dsh plugin`**（本包声明了 `dsh.bundle`，它本该自动写入 `dsh.profile.bundles`，不需要手写 `insert`）：
-
-```bash
-dsh plugin --profile web add git+https://github.com/liyang52520/dsh-web-login.git
-```
-
-> ⚠️ 注意 `DSH_HOME`。这条命令按 `$DSH_HOME`（默认 `~/.dsh`）决定操作哪个 profile；传错了它会**安静地在另一个路径新建 profile 并装好**，pnpm 报成功、退出码 0，但线上毫无变化。
-
-**不用 pnpm**：
-
-```bash
-git clone https://github.com/liyang52520/dsh-web-login.git /opt/dsh-web-login
-PROFILE="${DSH_HOME:-$HOME/.dsh}/profiles/web"
-mkdir -p "$PROFILE/node_modules/dsh-web-login"
-git -C /opt/dsh-web-login archive HEAD | tar -x -C "$PROFILE/node_modules/dsh-web-login"
-```
 
 </details>
 
