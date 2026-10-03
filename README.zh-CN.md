@@ -98,6 +98,28 @@ dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 
 ![深色主题](docs/settings-dark.jpg)
 
+### 本机 agent 与自动化
+
+在宿主机上运行的 agent 无法靠伪造 `Host` 通过闸门，任何 `--trusted-host` 取值也改变不了这一点：闸门只认绑定在 authority 上的签名 Cookie，而它随后查询的 Host/Origin 栅栏位于闸门之后。让本机进程通过是一项显式选择：
+
+```yaml
+- id: web-login
+  config:
+    trustDirectLoopback: true
+```
+
+开启后，**直连回环 socket**、且不携带任何反向代理会添加的请求头（配置项 `clientIpHeader`、`x-real-ip`、`x-forwarded-for`）的请求，一律视为已验证。此时 `curl http://127.0.0.1:3080/` 直接返回应用文档，无头浏览器打开即已是登录后的界面——因为「拿到文档」这一步本身就会让 Harness 签发自己的登录态，agent 侧不需要做任何 token 交换。
+
+该选项仅在密码已设置后生效，因此无法消耗首次设置用的初始化口令。它也只放开文档路由：登录表单、改密路由与插件自身的 `/__api/*` 仍要求 Cookie。
+
+开启前需接受三点：
+
+- **SSH 隧道同属直连回环。** `ssh -L 3080:127.0.0.1:3080` 的连接由宿主机自身发起，因此隧道使用者不再需要密码。
+- **宿主机上的任何人都被放行**，不只是运行 dsh 的那个账号。
+- **部署一变，门禁会静默失效。** 一旦端口改为对外监听，或上游代理不再添加上述请求头，所有远程请求看起来都像本机。只要该选项开启，插件每次启动都会打印这行警告。
+
+更窄的做法是保持关闭、把密码交给 agent：POST 到 `/__login`，保存 `dsh_gate` Cookie 并复用。后续可考虑在同一「直连」规则上加一个专用令牌。
+
 ## 配置
 
 配置项写入 profile 的 `cordis.patch.yml`：
@@ -122,6 +144,7 @@ dsh web-login: setup-token: 7rJfiimRBtBZbZZqbEY3_O6VBO3Te-bA
 | `lockoutSeconds` | `300` | 锁定时长（秒） |
 | `clientIpHeader` | `"x-real-ip"` | 用于获取真实客户端 IP 的请求头，决定限流计数对象 |
 | `allowLoopbackSetup` | `false` | 允许回环地址在无初始化口令的情况下设置密码 |
+| `trustDirectLoopback` | `false` | 将未经反向代理的直连回环请求视为已验证，参见「本机 agent 与自动化」 |
 | `indexHtml` | `""` | 手动指定前端 `index.html` 路径 |
 | `unlockRemoteSettings` | `true` | 允许远程浏览器修改设置，参见「设置页只读」 |
 | `pageTheme` | `"auto"` | 登录页配色：`auto` / `light` / `dark` |
@@ -186,6 +209,7 @@ ssh -N -L 3080:127.0.0.1:3080 user@<服务器地址>
 - 登录态 Cookie 经 HMAC-SHA256 签名并绑定访问所使用的主机，换用其它主机名访问或伪造 Cookie 均无效
 - 限流记录保存于内存，重启后清零；可防御单来源暴力破解，不防御分布式慢速爆破，但所有失败均写入审计日志
 - 修改密码将轮换签名密钥，其它设备登录态随即失效
+- `trustDirectLoopback` 把边界从「你是谁」改为「你怎么连进来的」，代价见「本机 agent 与自动化」
 - 插件拥有宿主进程的完整权限，请仅使用经过审阅的版本
 
 ## 开发

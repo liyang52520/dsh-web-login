@@ -23,6 +23,7 @@ const {
 	clearCookies,
 	createState,
 	decodeCookie,
+	directLocalRequest,
 	encodeCookie,
 	fromBase64url,
 	harnessCookieName,
@@ -191,6 +192,47 @@ test("readConfig normalizes the client-IP header name and honours overrides", ()
 	assert.equal(readConfig({ clientIpHeader: "" }).clientIpHeader, "");
 	assert.equal(readConfig({ rememberDays: 90 }).rememberDays, 90);
 	assert.equal(readConfig({ unlockRemoteSettings: false }).unlockRemoteSettings, false);
+});
+
+/** A minimal node:http-shaped request as it arrives on the loopback socket. */
+const directRequest = (headers = {}, remoteAddress = "127.0.0.1") => ({ headers, socket: { remoteAddress } });
+
+test("the direct-loopback bypass is off unless configured", () => {
+	assert.equal(DEFAULTS.trustDirectLoopback, false, "the gate must not open itself by default");
+	const off = readConfig(undefined);
+	assert.equal(directLocalRequest(directRequest(), off), false, "loopback stays gated while the option is off");
+	assert.equal(readConfig({ trustDirectLoopback: false }).trustDirectLoopback, false);
+	assert.equal(readConfig({ trustDirectLoopback: true }).trustDirectLoopback, true);
+	assert.throws(() => readConfig({ trustDirectLoopback: "yes" }), /must be a boolean/);
+});
+
+test("the direct-loopback bypass admits only a proxy-free loopback connection", () => {
+	const on = readConfig({ trustDirectLoopback: true });
+	assert.equal(directLocalRequest(directRequest(), on), true, "a plain local curl must pass");
+	assert.equal(directLocalRequest(directRequest({}, "::1"), on), true, "IPv6 loopback counts");
+	assert.equal(directLocalRequest(directRequest({}, "::ffff:127.0.0.1"), on), true, "IPv4-mapped loopback counts");
+	assert.equal(directLocalRequest(directRequest({}, "198.51.100.7"), on), false, "a remote peer is not local");
+	assert.equal(directLocalRequest({ headers: {} }, on), false, "a request without a socket is refused");
+	/* The Host header is a spoofable string, so it must never decide this. */
+	assert.equal(directLocalRequest(directRequest({ host: "8.136.56.185" }), on), true, "Host is irrelevant here");
+});
+
+test("any header a reverse proxy adds disqualifies the bypass", () => {
+	const on = readConfig({ trustDirectLoopback: true });
+	assert.equal(directLocalRequest(directRequest({ "x-real-ip": "198.51.100.7" }), on), false, "nginx's real-IP header");
+	assert.equal(directLocalRequest(directRequest({ "x-forwarded-for": "198.51.100.7" }), on), false, "forwarded-for chain");
+	assert.equal(
+		directLocalRequest(directRequest({ "x-real-ip": "127.0.0.1" }), on),
+		false,
+		"even a loopback-valued proxy header means a proxy was in the path"
+	);
+	const custom = readConfig({ trustDirectLoopback: true, clientIpHeader: "cf-connecting-ip" });
+	assert.equal(directLocalRequest(directRequest({ "cf-connecting-ip": "203.0.113.5" }), custom), false, "a declared proxy header counts");
+	assert.equal(
+		directLocalRequest(directRequest({ "cf-connecting-ip": "203.0.113.5" }), on),
+		true,
+		"a header no proxy here adds is not a marker; declaring it via clientIpHeader is what makes it one"
+	);
 });
 
 test("the transport hook only declares ownsHost and adds no other capability", () => {

@@ -98,6 +98,28 @@ The panel follows Harness's theme setting.
 
 ![Dark theme](docs/settings-dark.jpg)
 
+### Local agents and automation
+
+An agent running on the host cannot get past the gate by spoofing `Host`, and no `--trusted-host` value changes that: the gate admits a signed cookie bound to the authority, and the Host/Origin fence it consults afterwards sits behind the gate. Letting a local process through is an explicit choice:
+
+```yaml
+- id: web-login
+  config:
+    trustDirectLoopback: true
+```
+
+With it on, a request that arrives **directly on the loopback socket** and carries none of the headers a reverse proxy adds — the configured `clientIpHeader`, `x-real-ip`, `x-forwarded-for` — is treated as already verified. `curl http://127.0.0.1:3080/` then returns the application document, and a headless browser opens the interface already signed in: reaching the document is what makes Harness mint its own session, so no token exchange is needed on the agent's side.
+
+It only takes effect once a password exists, so it cannot spend the first-run setup token. It also opens the document route alone: the login form, the account route and the plugin's `/__api/*` surface still require the cookie.
+
+Three consequences to accept before enabling it:
+
+- **An SSH tunnel is also a direct loopback connection.** `ssh -L 3080:127.0.0.1:3080` arrives from the host itself, so tunnel users no longer need the password.
+- **Anyone on the host is admitted**, not only the account running dsh.
+- **A deployment change silently disarms the gate.** If the port is ever bound publicly, or the upstream proxy stops adding those headers, every remote request looks local. The plugin prints this warning at startup whenever the option is on.
+
+The narrower alternative is to leave the option off and give the agent the password: POST it to `/__login`, keep the `dsh_gate` cookie, and reuse it. A dedicated token on the same loopback rule is a possible future addition.
+
 ## Configuration
 
 Configuration is written to the profile's `cordis.patch.yml`:
@@ -122,6 +144,7 @@ Configuration is written to the profile's `cordis.patch.yml`:
 | `lockoutSeconds` | `300` | Lockout duration in seconds |
 | `clientIpHeader` | `"x-real-ip"` | Header used to obtain the real client IP; determines what the rate limit counts |
 | `allowLoopbackSetup` | `false` | Allow loopback addresses to set a password without the setup token |
+| `trustDirectLoopback` | `false` | Treat a proxy-free loopback connection as verified; see "Local agents and automation" |
 | `indexHtml` | `""` | Explicit path to the frontend `index.html` |
 | `unlockRemoteSettings` | `true` | Allow remote browsers to change settings; see "Settings are read-only" |
 | `pageTheme` | `"auto"` | Login page colour scheme: `auto` / `light` / `dark` |
@@ -186,6 +209,7 @@ The port is then not exposed publicly, and the plugin still applies. Other known
 - The session cookie is HMAC-SHA256 signed and bound to the host in use; another hostname or a forged cookie is rejected
 - Rate-limit state is held in memory and cleared on restart; it defends against single-source brute force, not distributed slow attacks, but every failure is written to the audit log
 - Changing the password rotates the signing key, immediately invalidating sessions on other devices
+- `trustDirectLoopback` moves the boundary from "who you are" to "how you connected": see "Local agents and automation" for what it gives up
 - The plugin has full access to the host process. Use only versions you have reviewed
 
 ## Interface language

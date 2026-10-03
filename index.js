@@ -88,6 +88,7 @@ const DEFAULTS = {
 	lockoutSeconds: 300,
 	clientIpHeader: "x-real-ip",
 	allowLoopbackSetup: false,
+	trustDirectLoopback: false,
 	indexHtml: "",
 	unlockRemoteSettings: true,
 	pageTheme: "auto"
@@ -252,6 +253,7 @@ function readConfig(raw) {
 		lockoutSeconds: positiveInt(source.lockoutSeconds, DEFAULTS.lockoutSeconds, "lockoutSeconds"),
 		clientIpHeader: text(source.clientIpHeader, DEFAULTS.clientIpHeader, "clientIpHeader").toLowerCase(),
 		allowLoopbackSetup: boolean(source.allowLoopbackSetup, DEFAULTS.allowLoopbackSetup, "allowLoopbackSetup"),
+		trustDirectLoopback: boolean(source.trustDirectLoopback, DEFAULTS.trustDirectLoopback, "trustDirectLoopback"),
 		indexHtml: text(source.indexHtml, DEFAULTS.indexHtml, "indexHtml"),
 		unlockRemoteSettings: boolean(source.unlockRemoteSettings, DEFAULTS.unlockRemoteSettings, "unlockRemoteSettings"),
 		pageTheme: pageTheme(source.pageTheme, DEFAULTS.pageTheme)
@@ -288,6 +290,31 @@ function clientAddress(req, config) {
 /** Whether the request reached the port from this machine itself. */
 function isLoopbackRequest(req, config) {
 	return isLoopbackAddress(clientAddress(req, config));
+}
+
+/**
+ * Whether this request is the operator's own local automation: a direct
+ * loopback connection that never passed through the reverse proxy.
+ *
+ * A proxy is recognised by the headers it adds — the configured real-IP header,
+ * `x-real-ip` and `x-forwarded-for`. nginx overwrites all three, so a remote
+ * client cannot fake their absence, and a local caller that sends them anyway
+ * is refused rather than admitted. The peer address comes from the socket and
+ * never from a header, so a caller cannot talk its way in or out.
+ *
+ * This is only sound while dsh stays bound to loopback and the proxy keeps
+ * adding those headers. Bind the port publicly, or put an upstream in front
+ * that adds none of them, and every remote request looks exactly like this one.
+ * @param req - node:http request.
+ * @param config - resolved plugin config.
+ */
+function directLocalRequest(req, config) {
+	if (!config.trustDirectLoopback) return false;
+	const headers = req.headers ?? {};
+	for (const name of [config.clientIpHeader, "x-real-ip", "x-forwarded-for"]) {
+		if (name !== "" && headers[name] !== undefined) return false;
+	}
+	return isLoopbackAddress(req.socket?.remoteAddress ?? "");
 }
 
 /** Derive one scrypt hash. */
@@ -592,6 +619,16 @@ export function apply(ctx, config) {
 		ctx.logger.info("dsh-web-login: disabled by config");
 		return;
 	}
+	if (resolved.trustDirectLoopback) {
+		for (const line of [
+			"已开启 trustDirectLoopback：凡直连本机端口、且未经反向代理的请求，一律视为已登录。",
+			"  · 经 nginx 的公网请求仍会被拦下（它带真实 IP 头）。",
+			"  · 通过 ssh -L 隧道进来的请求也会被放行，隧道使用者不再需要密码。",
+			"  · 一旦本端口改为对外监听，或上游代理不再添加真实 IP 头，门禁将对所有人失效。"
+		]) {
+			process.stdout.write(`dsh web-login: ${line}\n`);
+		}
+	}
 
 	const failures = new FailureTracker(resolved.maxFailures, resolved.lockoutSeconds);
 	const setupToken = base64url(randomBytes(SETUP_TOKEN_BYTES));
@@ -697,7 +734,18 @@ export function apply(ctx, config) {
 		}
 		const url = new URL(req.url ?? "/", "http://dsh.invalid");
 		const isRoot = url.pathname === "/";
-		const gated = state !== undefined && decodeCookie(cookieValue(req.headers.cookie, COOKIE_NAME), state.sessionSecret, authority) !== undefined;
+		/*
+		 * The document is the only surface the local-automation bypass opens.
+		 * Reaching it is enough: the browser is then handed to Harness's own
+		 * token exchange, which mints its session, so the settings API, the
+		 * account route and the login form stay cookie-only. The bypass also
+		 * requires a password to exist, so `trustDirectLoopback` cannot spend
+		 * the first-run setup token that protects a brand-new instance.
+		 */
+		const gated =
+			state !== undefined &&
+			(decodeCookie(cookieValue(req.headers.cookie, COOKIE_NAME), state.sessionSecret, authority) !== undefined ||
+				directLocalRequest(req, resolved));
 		if (!gated) {
 			servePrompt(req, res, 200, undefined);
 			return;
@@ -1195,6 +1243,8 @@ export const internals = {
 	FailureTracker,
 	readConfig,
 	pageTheme,
+	directLocalRequest,
+	isLoopbackAddress,
 	DEFAULTS,
 	COOKIE_NAME,
 	COOKIE_VERSION,
