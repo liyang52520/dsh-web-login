@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-login",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Password gate for the DeepSeek Harness Web GUI: first-run password setup, remember-me sessions, brute-force lockout, audit log, and a management page inside Harness settings.",
   "type": "module",
   "main": "index.js",
